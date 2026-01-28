@@ -1,16 +1,7 @@
 plugins {
-    // 删掉 project. 前缀，直接引用变量名
     id 'fabric-loom' version "${loom_version}"
     id 'maven-publish'
 }
-
-// 黑科技补丁：防止 1.21.11 映射解析崩溃
-try {
-    def loomClass = Class.forName("net.fabricmc.loom.LoomGradlePlugin")
-    def gsonField = com.google.gson.Gson.class.getDeclaredField("prettyPrinting")
-    gsonField.setAccessible(true)
-    gsonField.setBoolean(loomClass.GSON, false)
-} catch (Throwable e) { }
 
 version = project.mod_version
 group = project.maven_group
@@ -20,32 +11,44 @@ base {
 }
 
 repositories {
-    mavenCentral()
-    maven { url 'https://maven.fabricmc.net/' }
-    maven { url 'https://maven.nucleoid.xyz/' } 
-    maven { url 'https://libraries.minecraft.net/' } 
+    // 修复：Gradle 8+ 建议使用 url = uri(...) 避免警告
+    maven { url = uri('https://maven.nucleoid.xyz') } 
+}
+
+loom {
+    splitEnvironmentSourceSets()
+
+    mods {
+        "poly2ce" {
+            sourceSet sourceSets.main
+        }
+    }
 }
 
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings loom.officialMojangMappings()
-
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+    // Polymer Core
+    modImplementation include("eu.pb4:polymer-core:${project.polymer_core_version}")
     
-    modImplementation include("eu.pb4:polymer-core:${project.polymer_version}")
-    modImplementation include("eu.pb4:polymer-virtual-entity:${project.polymer_version}")
+    // 修复：Virtual Entity 必须使用它自己的版本号，不能混用 core 的版本
+    // 请确保你在 gradle.properties 里定义了 polymer_virtual_entity_version
+    modImplementation include("eu.pb4:polymer-virtual-entity:${project.polymer_core_version}")
 }
 
 processResources {
     inputs.property "version", project.version
+
     filesMatching("fabric.mod.json") {
         expand "version": inputs.properties.version
     }
 }
 
 tasks.withType(JavaCompile).configureEach {
-    it.options.encoding = "UTF-8"
     it.options.release = 21
 }
 
@@ -56,8 +59,10 @@ java {
 }
 
 jar {
+    inputs.property "archivesName", project.base.archivesName // 兼容性修复
+
     from("LICENSE") {
-        rename { "${it}_${base.archivesName.get()}" }
+        rename { "${it}_${inputs.properties.archivesName}"}
     }
 }
 

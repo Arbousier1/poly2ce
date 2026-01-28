@@ -1,12 +1,10 @@
 pluginManagement {
-    repositories {
-        // 插件仓库必须放在这里面
-        maven { name = 'Fabric'; url = 'https://maven.fabricmc.net/' }
-        mavenCentral()
-        gradlePluginPortal()
-    }
+	repositories {
+		maven {
+			name = 'Fabric'
+			url = 'https://maven.fabricmc.net/'
+		}
+		mavenCentral()
+		gradlePluginPortal()
+	}
 }
-
-// 注意：这里不要写任何 repositories { } 块！
-
-rootProject.name = 'poly2ce'

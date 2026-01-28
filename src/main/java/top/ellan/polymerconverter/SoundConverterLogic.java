@@ -1,6 +1,7 @@
 package top.ellan.polymerconverter;
 
 import eu.pb4.polymer.core.api.other.PolymerSoundEvent;
+import eu.pb4.polymer.core.api.utils.PolymerSyncedObject; // 必须导入这个
 import net.minecraft.registry.Registries;
 import net.minecraft.sound.SoundEvent;
 import net.minecraft.util.Identifier;
@@ -19,37 +20,43 @@ public class SoundConverterLogic {
     public static Map<String, Object> convert() {
         Map<String, Object> rootConfig = new LinkedHashMap<>();
         Map<String, Object> sounds = new LinkedHashMap<>();
-        
+
         int polymerCount = 0;
         int moddedCount = 0;
 
         for (Identifier id : Registries.SOUND_EVENT.getIds()) {
-            // 跳过原版声音，CraftEngine 默认支持
+            // 跳过原版声音
             if (id.getNamespace().equals("minecraft")) continue;
 
             SoundEvent event = Registries.SOUND_EVENT.get(id);
+            if (event == null) continue;
+
             Map<String, Object> entry = new LinkedHashMap<>();
 
+            // === 核心修复点 ===
+            // PolymerSoundEvent 不再是 SoundEvent 的子类，而是通过 SyncedObject 挂载的
+            PolymerSyncedObject<SoundEvent> synced = PolymerSyncedObject.getSyncedObject(Registries.SOUND_EVENT, event);
+
             // 1. Polymer 自定义声音处理
-            if (event instanceof PolymerSoundEvent polymerSound) {
+            if (synced instanceof PolymerSoundEvent polymerSound) {
                 polymerCount++;
                 entry.put("type", "polymer");
-                
+
                 try {
                     // 提取 Fallback Sound (核心功能)
                     // 这是一个 protected 字段，必须反射
                     Field fallbackField = PolymerSoundEvent.class.getDeclaredField("polymerSound");
                     fallbackField.setAccessible(true);
                     SoundEvent fallback = (SoundEvent) fallbackField.get(polymerSound);
-                    
+
                     if (fallback != null) {
-                        entry.put("fallback", fallback.getId().toString());
+                        // Yarn 映射下使用 getId()
+                        entry.put("fallback", Registries.SOUND_EVENT.getKey(fallback).toString());
                     } else {
                         entry.put("fallback", "none");
                     }
 
                     // 提取 Source UUID (资源包标识)
-                    // 有助于区分声音来源
                     try {
                         Field sourceField = PolymerSoundEvent.class.getDeclaredField("source");
                         sourceField.setAccessible(true);
@@ -68,19 +75,18 @@ public class SoundConverterLogic {
                 } catch (Exception e) {
                     entry.put("_error", "unknown: " + e.getMessage());
                 }
-            } 
+            }
             // 2. 普通 Mod 声音
             else {
                 moddedCount++;
                 entry.put("type", "modded");
-                // Mod 声音通常直接使用 ID 即可，没有复杂的 fallback 逻辑
             }
 
             sounds.put(id.toString(), entry);
         }
 
         LOGGER.info("Sound conversion finished. Polymer: {}, Modded: {}", polymerCount, moddedCount);
-        
+
         rootConfig.put("sounds", sounds);
         return rootConfig;
     }

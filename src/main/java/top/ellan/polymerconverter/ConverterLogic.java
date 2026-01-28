@@ -1,18 +1,30 @@
 package top.ellan.polymerconverter;
 
+import eu.pb4.polymer.common.impl.FakeWorld;
 import eu.pb4.polymer.core.api.item.PolymerItem;
 import eu.pb4.polymer.core.api.item.PolymerItemUtils;
-import eu.pb4.polymer.core.api.other.PacketContext;
+import xyz.nucleoid.packettweaker.PacketContext;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.*;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.tooltip.TooltipType;
-import net.minecraft.item.equipment.ArmorTrim;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.RegistryWrapper;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ServerWorld;
+import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.Rarity;
+import net.minecraft.world.GameMode;
+import com.mojang.authlib.GameProfile;
+
+// [Fix] 新增导入：用于处理文本序列化
+import net.minecraft.text.TextCodecs;
+import com.mojang.serialization.JsonOps;
+import com.google.gson.JsonElement;
 
 import java.util.*;
 
@@ -21,17 +33,23 @@ public class ConverterLogic {
     public static Map<String, Object> convert(PolymerItem polymerItem) {
         Map<String, Object> itemConfig = new LinkedHashMap<>();
         
+        if (!(polymerItem instanceof Item)) {
+            itemConfig.put("_error", "PolymerItem is not an instance of Item");
+            return itemConfig;
+        }
+
         // 1. 准备环境
         ItemStack serverStack = new ItemStack((Item) polymerItem);
-        // 静态导出时没有真实玩家，使用空上下文
-        PacketContext ctx = PacketContext.create(); 
+        ServerPlayerEntity fakePlayer = createSafeFakePlayer();
+        PacketContext ctx = fakePlayer != null ? PacketContext.create(fakePlayer) : PacketContext.create();
+        // 获取注册表查找器供 Text 序列化使用
+        RegistryWrapper.WrapperLookup registryLookup = fakePlayer != null ? fakePlayer.getRegistryManager() : null;
 
         try {
             // --- A. 基础材质与模型 ---
             Item clientBaseItem = polymerItem.getPolymerItem(serverStack, ctx);
             itemConfig.put("material", Registries.ITEM.getId(clientBaseItem).toString());
 
-            // Polymer Model
             Identifier modelId = polymerItem.getPolymerItemModel(serverStack, ctx);
             if (modelId != null) {
                 Map<String, Object> modelData = new LinkedHashMap<>();
@@ -40,49 +58,44 @@ public class ConverterLogic {
                 itemConfig.put("model", modelData);
             }
 
-            // --- B. 获取完整的客户端堆栈 ---
+            // --- B. 获取客户端堆栈 ---
             ItemStack clientStack = PolymerItemUtils.getPolymerItemStack(serverStack, TooltipType.BASIC, ctx);
             
-            // CraftEngine 配置结构：
-            // data:
-            //   item-name: ...
-            //   lore: ...
-            //   components: 
-            //     minecraft:food: ...
             Map<String, Object> dataMap = new LinkedHashMap<>();
-            Map<String, Object> components = new LinkedHashMap<>(); // 专门存放结构化组件
+            Map<String, Object> components = new LinkedHashMap<>();
 
-            // 1. 名称 (Item Name)
-            if (clientStack.hasCustomName()) {
-                dataMap.put("item-name", "<!i>" + clientStack.getName().getString());
+            // --- 1. 显示名称 ---
+            if (clientStack.contains(DataComponentTypes.CUSTOM_NAME)) {
+                Text nameText = clientStack.getName();
+                dataMap.put("item-name", serializeText(nameText, registryLookup)); 
             }
 
-            // 2. 描述 (Lore)
+            // --- 2. 描述 (Lore) ---
             if (clientStack.contains(DataComponentTypes.LORE)) {
                 LoreComponent lore = clientStack.get(DataComponentTypes.LORE);
                 if (lore != null) {
                     List<String> loreLines = new ArrayList<>();
                     for (Text line : lore.lines()) {
-                        loreLines.add("<!i>" + line.getString());
+                        loreLines.add(serializeText(line, registryLookup));
                     }
                     dataMap.put("lore", loreLines);
                 }
             }
 
-            // 3. 自定义模型数据 (CMD) - 兼容 1.21.4+
+            // --- 3. CustomModelData ---
             if (clientStack.contains(DataComponentTypes.CUSTOM_MODEL_DATA)) {
-                Object cmdValue = clientStack.get(DataComponentTypes.CUSTOM_MODEL_DATA).value();
-                if (cmdValue instanceof Integer intVal) {
-                    itemConfig.put("custom-model-data", intVal);
-                } else if (cmdValue instanceof List<?> list && !list.isEmpty()) {
-                    Object first = list.get(0);
-                    if (first instanceof Number num) {
-                        itemConfig.put("custom-model-data", (int) num.floatValue());
+                CustomModelDataComponent cmd = clientStack.get(DataComponentTypes.CUSTOM_MODEL_DATA);
+                if (cmd != null) {
+                    if (!cmd.floats().isEmpty()) {
+                        itemConfig.put("custom-model-data", (int) cmd.floats().get(0).floatValue());
+                    }
+                    if (!cmd.strings().isEmpty()) {
+                        itemConfig.put("custom-model-data-strings", cmd.strings());
                     }
                 }
             }
             
-            // 4. Item Model 组件 (1.21.4+)
+            // --- 4. Item Model ---
             if (!itemConfig.containsKey("model") && clientStack.contains(DataComponentTypes.ITEM_MODEL)) {
                 Identifier itemModelId = clientStack.get(DataComponentTypes.ITEM_MODEL);
                 if (itemModelId != null) {
@@ -93,7 +106,7 @@ public class ConverterLogic {
                 }
             }
 
-            // 5. 附魔 (Enchantments)
+            // --- 5. 附魔 ---
             if (clientStack.contains(DataComponentTypes.ENCHANTMENTS)) {
                 ItemEnchantmentsComponent enchants = clientStack.get(DataComponentTypes.ENCHANTMENTS);
                 if (enchants != null && !enchants.isEmpty()) {
@@ -107,7 +120,7 @@ public class ConverterLogic {
                 }
             }
 
-            // 6. 属性修饰符 (Attribute Modifiers) -> 放入 components
+            // --- 6. 属性修饰符 ---
             if (clientStack.contains(DataComponentTypes.ATTRIBUTE_MODIFIERS)) {
                 AttributeModifiersComponent attrs = clientStack.get(DataComponentTypes.ATTRIBUTE_MODIFIERS);
                 if (attrs != null && !attrs.modifiers().isEmpty()) {
@@ -122,14 +135,13 @@ public class ConverterLogic {
                         attrList.add(attrMap);
                     });
                     
-                    // 标准 NBT 结构格式
                     Map<String, Object> attrComp = new LinkedHashMap<>();
                     attrComp.put("modifiers", attrList);
                     components.put("minecraft:attribute_modifiers", attrComp);
                 }
             }
 
-            // 7. 染色 (Dyed Color)
+            // --- 7. 染色 ---
             if (clientStack.contains(DataComponentTypes.DYED_COLOR)) {
                 DyedColorComponent dyedColor = clientStack.get(DataComponentTypes.DYED_COLOR);
                 if (dyedColor != null) {
@@ -139,15 +151,11 @@ public class ConverterLogic {
                 }
             }
 
-            // 8. 附魔光效 (Glint)
+            // --- 8. 杂项属性 ---
             if (clientStack.contains(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE)) {
                 Boolean glint = clientStack.get(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE);
-                if (glint != null) {
-                    dataMap.put("enchantment-glint-override", glint);
-                }
+                if (glint != null) dataMap.put("enchantment-glint-override", glint);
             }
-
-            // 9. 物理属性 (Unbreakable / Damage)
             if (clientStack.contains(DataComponentTypes.UNBREAKABLE)) {
                 dataMap.put("unbreakable", true);
             }
@@ -157,13 +165,11 @@ public class ConverterLogic {
             if (clientStack.contains(DataComponentTypes.DAMAGE)) {
                  dataMap.put("damage", clientStack.get(DataComponentTypes.DAMAGE));
             }
-
-            // 10. 修复成本 (Repair Cost)
             if (clientStack.contains(DataComponentTypes.REPAIR_COST)) {
                  dataMap.put("repair-cost", clientStack.get(DataComponentTypes.REPAIR_COST));
             }
 
-            // 11. 食物属性 (Food) -> 放入 components
+            // --- 9. 食物 ---
             if (clientStack.contains(DataComponentTypes.FOOD)) {
                 FoodComponent food = clientStack.get(DataComponentTypes.FOOD);
                 if (food != null) {
@@ -174,8 +180,45 @@ public class ConverterLogic {
                     components.put("minecraft:food", foodMap);
                 }
             }
+            
+            // --- 10. 消耗品 ---
+            if (clientStack.contains(DataComponentTypes.CONSUMABLE)) {
+                ConsumableComponent consumable = clientStack.get(DataComponentTypes.CONSUMABLE);
+                if (consumable != null) {
+                    Map<String, Object> consumeMap = new LinkedHashMap<>();
+                    consumeMap.put("consume_seconds", consumable.consumeSeconds());
+                    if (consumable.useAction() != null) {
+                        consumeMap.put("animation", consumable.useAction().name().toLowerCase());
+                    }
+                    components.put("minecraft:consumable", consumeMap);
+                }
+            }
 
-            // 12. 稀有度 (Rarity)
+            // --- 11. 冷却 ---
+            if (clientStack.contains(DataComponentTypes.USE_COOLDOWN)) {
+                UseCooldownComponent cooldown = clientStack.get(DataComponentTypes.USE_COOLDOWN);
+                if (cooldown != null) {
+                     Map<String, Object> cdMap = new LinkedHashMap<>();
+                     cdMap.put("seconds", cooldown.seconds());
+                     cooldown.cooldownGroup().ifPresent(group -> 
+                         cdMap.put("group", group.toString())
+                     );
+                     components.put("minecraft:use_cooldown", cdMap);
+                }
+            }
+
+            // --- 12. 工具 ---
+            if (clientStack.contains(DataComponentTypes.TOOL)) {
+                ToolComponent tool = clientStack.get(DataComponentTypes.TOOL);
+                if (tool != null) {
+                    Map<String, Object> toolMap = new LinkedHashMap<>();
+                    toolMap.put("default_mining_speed", tool.defaultMiningSpeed());
+                    toolMap.put("damage_per_block", tool.damagePerBlock());
+                    components.put("minecraft:tool", toolMap);
+                }
+            }
+
+            // --- 13. 稀有度 ---
             if (clientStack.contains(DataComponentTypes.RARITY)) {
                 Rarity rarity = clientStack.get(DataComponentTypes.RARITY);
                 if (rarity != null) {
@@ -183,7 +226,6 @@ public class ConverterLogic {
                 }
             }
 
-            // 13. Tooltip 样式 (1.21.2+)
             if (clientStack.contains(DataComponentTypes.TOOLTIP_STYLE)) {
                 Identifier style = clientStack.get(DataComponentTypes.TOOLTIP_STYLE);
                 if (style != null) {
@@ -191,34 +233,55 @@ public class ConverterLogic {
                 }
             }
 
-            // 14. 盔甲纹饰 (Trim) -> 放入 components
+            // --- 14. 盔甲纹饰 (Trim) ---
             if (clientStack.contains(DataComponentTypes.TRIM)) {
-                ArmorTrim trim = clientStack.get(DataComponentTypes.TRIM);
+                var trim = clientStack.get(DataComponentTypes.TRIM);
                 if (trim != null) {
                     Map<String, Object> trimMap = new LinkedHashMap<>();
-                    trimMap.put("material", trim.material().value().getIdAsString());
-                    trimMap.put("pattern", trim.pattern().value().getIdAsString());
+                    trim.material().getKey().ifPresent(key -> 
+                        trimMap.put("material", key.getValue().toString())
+                    );
+                    trim.pattern().getKey().ifPresent(key -> 
+                        trimMap.put("pattern", key.getValue().toString())
+                    );
                     components.put("minecraft:trim", trimMap);
                 }
             }
 
-            // 15. 装备属性 (Equippable) -> 放入 components
+            // --- 15. 可装备 ---
             if (clientStack.contains(DataComponentTypes.EQUIPPABLE)) {
                 EquippableComponent equippable = clientStack.get(DataComponentTypes.EQUIPPABLE);
                 if (equippable != null) {
                     Map<String, Object> eqMap = new LinkedHashMap<>();
                     eqMap.put("slot", equippable.slot().asString());
-                    if (equippable.model().isPresent()) {
-                        eqMap.put("model", equippable.model().get().toString());
-                    }
-                    // eqMap.put("camera_overlay", ...); // 可选
+                    equippable.assetId().ifPresent(id -> 
+                        eqMap.put("model", id.toString())
+                    );
                     components.put("minecraft:equippable", eqMap);
                 }
             }
+            
+            // --- 16. 唱片机 ---
+            if (clientStack.contains(DataComponentTypes.JUKEBOX_PLAYABLE)) {
+                JukeboxPlayableComponent jukebox = clientStack.get(DataComponentTypes.JUKEBOX_PLAYABLE);
+                if (jukebox != null) {
+                    Map<String, Object> jbMap = new LinkedHashMap<>();
+                    jukebox.song().getKey().ifPresent(key -> 
+                        jbMap.put("song", key.getValue().toString())
+                    );
+                    components.put("minecraft:jukebox_playable", jbMap);
+                }
+            }
 
-            // --- 组装结果 ---
+            // --- 17. 烟花 ---
+            if (clientStack.contains(DataComponentTypes.FIREWORKS)) {
+                FireworksComponent fireworks = clientStack.get(DataComponentTypes.FIREWORKS);
+                if (fireworks != null) {
+                     dataMap.put("flight", fireworks.flightDuration());
+                }
+            }
+
             if (!components.isEmpty()) {
-                // 将结构化组件放入 components 节点
                 dataMap.put("components", components);
             }
             
@@ -233,5 +296,42 @@ public class ConverterLogic {
         }
 
         return itemConfig;
+    }
+
+    // --- 辅助方法 ---
+
+    /**
+     * [Fix] 使用 Codec + RegistryOps 序列化 Text，解决 Serializer 类丢失问题
+     */
+    private static String serializeText(Text text, RegistryWrapper.WrapperLookup registries) {
+        if (registries != null) {
+            try {
+                // 使用 1.21+ 标准 Codec 方式序列化
+                // getOps(JsonOps.INSTANCE) 会创建一个带有注册表上下文的 Ops
+                return TextCodecs.CODEC.encodeStart(registries.getOps(JsonOps.INSTANCE), text)
+                        .map(JsonElement::toString)
+                        .result()
+                        .orElseGet(() -> "<!i>" + text.getString());
+            } catch (Exception e) {
+                // 忽略错误，回退到纯文本
+            }
+        }
+        // 没有注册表或发生异常时回退到纯文本
+        return "<!i>" + text.getString(); 
+    }
+
+    private static ServerPlayerEntity createSafeFakePlayer() {
+        try {
+            return new ServerPlayerEntity(
+                (MinecraftServer) null,
+                (ServerWorld) FakeWorld.INSTANCE_UNSAFE,
+                new GameProfile(UUID.randomUUID(), "PolymerItemConverter"),
+                SyncedClientOptions.createDefault()
+            ) {
+                @Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
+            };
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

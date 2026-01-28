@@ -30,7 +30,7 @@ public class PolymerConverterMod implements ModInitializer {
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             dispatcher.register(CommandManager.literal("poly2ce")
-                .requires(source -> source.hasPermissionLevel(4)) // 需要 OP 权限
+                .requires(eu.pb4.polymer.common.impl.CommonImplUtils.permission("command.poly2ce", 4))
                 .executes(context -> {
                     context.getSource().sendFeedback(() -> Text.literal("开始全量转换..."), false);
                     
@@ -64,7 +64,6 @@ public class PolymerConverterMod implements ModInitializer {
         for (Identifier id : Registries.ITEM.getIds()) {
             if (Registries.ITEM.get(id) instanceof PolymerItem polymerItem) {
                 String key = id.getNamespace() + ":" + id.getPath();
-                // 调用 ConverterLogic (物品)
                 itemsSection.put(key, ConverterLogic.convert(polymerItem));
                 count++;
             }
@@ -83,7 +82,6 @@ public class PolymerConverterMod implements ModInitializer {
             Block block = Registries.BLOCK.get(id);
             if (block instanceof PolymerBlock polymerBlock) {
                 String key = id.getNamespace() + ":" + id.getPath();
-                // 调用 BlockConverterLogic (方块)
                 blocksSection.put(key, BlockConverterLogic.convert(polymerBlock));
                 count++;
             }
@@ -99,14 +97,11 @@ public class PolymerConverterMod implements ModInitializer {
         int count = 0;
 
         for (Identifier id : Registries.ENTITY_TYPE.getIds()) {
-            // 跳过原版实体
             if (id.getNamespace().equals("minecraft")) continue;
 
             EntityType<?> type = Registries.ENTITY_TYPE.get(id);
-            // 调用 EntityConverterLogic (家具)
             Map<String, Object> config = EntityConverterLogic.convert(type);
             
-            // 如果返回结果包含错误或有效配置，则写入
             if (!config.isEmpty() && !config.containsKey("_note")) {
                 String key = id.getNamespace() + ":" + id.getPath();
                 furnitureSection.put(key, config);
@@ -119,7 +114,6 @@ public class PolymerConverterMod implements ModInitializer {
     }
 
     private int runSoundConversion() {
-        // 调用 SoundConverterLogic (声音)
         Map<String, Object> config = SoundConverterLogic.convert();
         writeConfig("converted_sounds.yml", config);
         
@@ -129,17 +123,32 @@ public class PolymerConverterMod implements ModInitializer {
         return 0;
     }
 
+    // === 核心修复点 ===
     private int runLangConversion() {
-        // 调用 LanguageConverterLogic (语言)
         Map<String, Object> config = LanguageConverterLogic.convert();
         writeConfig("converted_lang.yml", config);
         
         int count = 0;
         try {
-            Map<?,?> items = (Map<?,?>) ((Map<?,?>) config.get("lang#items")).get("en_us");
-            Map<?,?> blocks = (Map<?,?>) ((Map<?,?>) config.get("lang#blocks")).get("en_us");
-            count = items.size() + blocks.size();
-        } catch (Exception ignored) {}
+            // 安全地检查每一步是否为 null，并使用 instanceof 自动转换类型
+            Object itemsObj = config.get("lang#items");
+            if (itemsObj instanceof Map<?,?> itemsMap) {
+                Object enUsItems = itemsMap.get("en_us");
+                if (enUsItems instanceof Map<?,?> items) {
+                    count += items.size();
+                }
+            }
+
+            Object blocksObj = config.get("lang#blocks");
+            if (blocksObj instanceof Map<?,?> blocksMap) {
+                Object enUsBlocks = blocksMap.get("en_us");
+                if (enUsBlocks instanceof Map<?,?> blocks) {
+                    count += blocks.size();
+                }
+            }
+        } catch (Exception ignored) {
+            // 忽略异常，只返回统计到的数量
+        }
         return count;
     }
 
@@ -150,7 +159,6 @@ public class PolymerConverterMod implements ModInitializer {
                 Files.createDirectories(configDir);
             }
             Path outputPath = configDir.resolve(fileName);
-            // 使用 SimpleYamlWriter
             Files.writeString(outputPath, SimpleYamlWriter.dump(data));
             LOGGER.info("已生成: " + fileName);
         } catch (IOException e) {

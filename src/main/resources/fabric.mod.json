@@ -1,29 +1,28 @@
 {
-  "schemaVersion": 1,
-  "id": "polymer_converter",
-  "version": "${version}",
-  "name": "Polymer Converter",
-  "description": "Auto-convert Polymer content to CraftEngine configurations.",
-  "authors": [
-    "Ellan"
-  ],
-  "contact": {
-    "homepage": "",
-    "sources": ""
-  },
-  "license": "CC0-1.0",
-  "icon": "assets/polymer_converter/icon.png",
-  "environment": "*",
-  "entrypoints": {
-    "main": [
-      "top.ellan.polymerconverter.PolymerConverterMod"
-    ]
-  },
-  "depends": {
-    "fabricloader": ">=0.18.2",
-    "minecraft": "~1.21.11",
-    "java": ">=21",
-    "fabric-api": "*",
-    "polymer-core": "*"
-  }
+	"schemaVersion": 1,
+	"id": "poly2ce",
+	"version": "${version}",
+	"name": "poly2ce",
+	"description": "This is an example description! Tell everyone what your mod is about!",
+	"authors": [
+		"Me!"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/poly2ce/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"top.ellan.Poly2ce"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.18.4",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
 }

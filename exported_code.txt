@@ -1,0 +1,2006 @@
+
+==================================================
+FILE: remappedSrc\top\ellan\Poly2ce.java
+==================================================
+
+package top.ellan;
+import net.fabricmc.api.ModInitializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+public class Poly2ce implements ModInitializer {
+public static final String MOD_ID = "poly2ce";
+public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+@Override
+public void onInitialize() {
+LOGGER.info("Hello Fabric world!");
+}
+}
+
+==================================================
+FILE: remappedSrc\top\ellan\polymerconverter\BlockConverterLogic.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.common.impl.FakeWorld;
+import eu.pb4.polymer.core.api.block.PolymerBlock;
+import eu.pb4.polymer.core.api.block.PolymerBlockUtils;
+import eu.pb4.polymer.core.api.block.PolymerHeadBlock;
+import eu.pb4.polymer.core.api.other.PacketContext;
+import net.minecraft.block.*;
+import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.BlockTags;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.state.StateManager;
+import net.minecraft.state.property.*;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.GameMode;
+import com.mojang.authlib.GameProfile;
+import java.util.*;
+import java.util.stream.Collectors;
+public class BlockConverterLogic {
+public static Map<String, Object> convert(PolymerBlock polymerBlock) {
+Map<String, Object> blockConfig = new LinkedHashMap<>();
+Map<String, Object> settings = new LinkedHashMap<>();
+Block block = (Block) polymerBlock;
+BlockState defaultState = block.getDefaultState();
+ServerPlayerEntity fakePlayer = createSafeFakePlayer();
+PacketContext ctx = PacketContext.create(fakePlayer);
+try {
+BlockState visualState = PolymerBlockUtils.getPolymerBlockState(defaultState, ctx);
+Block visualBlock = visualState.getBlock();
+String materialId = Registries.BLOCK.getId(visualBlock).toString();
+settings.put("material", materialId);
+settings.put("hardness", block.getHardness());
+settings.put("resistance", block.getBlastResistance());
+if (defaultState.getLuminance() > 0) {
+settings.put("luminance", defaultState.getLuminance());
+}
+try {
+settings.put("map-color", defaultState.getMapColor(null, null).id);
+} catch (Exception ignored) {}
+if (defaultState.isReplaceable()) settings.put("replaceable", true);
+settings.put("push-reaction", defaultState.getPistonBehavior().name().toLowerCase());
+Map<String, String> sounds = new LinkedHashMap<>();
+String blockIdPath = Registries.BLOCK.getId(visualBlock).getPath();
+sounds.put("break", "minecraft:block." + blockIdPath + ".break");
+sounds.put("place", "minecraft:block." + blockIdPath + ".place");
+sounds.put("hit", "minecraft:block." + blockIdPath + ".hit");
+sounds.put("step", "minecraft:block." + blockIdPath + ".step");
+settings.put("sounds", sounds);
+List<String> tags = inferToolTags(defaultState);
+if (!tags.isEmpty()) {
+settings.put("tags", tags);
+}
+try {
+polymerBlock.onPolymerBlockSend(defaultState, BlockPos.ORIGIN.toMutable(), new PacketContext.NotNullWithPlayer(ctx) {
+@Override
+public ServerPlayerEntity getPlayer() {
+return fakePlayer;
+}
+});
+} catch (Exception ignored) {
+}
+StateManager<Block, BlockState> stateManager = block.getStateManager();
+Collection<Property<?>> properties = stateManager.getProperties();
+Map<String, Object> stateSection = new LinkedHashMap<>();
+if (!properties.isEmpty()) {
+Map<String, Object> propConfig = new LinkedHashMap<>();
+for (Property<?> prop : properties) {
+propConfig.put(prop.getName(), createPropertyDefinition(prop, defaultState));
+}
+stateSection.put("properties", propConfig);
+Map<String, Object> appearances = new LinkedHashMap<>();
+Map<String, Object> variants = new LinkedHashMap<>();
+for (BlockState state : stateManager.getStates()) {
+String variantKey = getVariantKey(state, properties);
+BlockState subVisualState = PolymerBlockUtils.getBlockStateSafely(polymerBlock, state, ctx);
+String subVisualBlockId = Registries.BLOCK.getId(subVisualState.getBlock()).toString();
+Map<String, Object> appearance = new LinkedHashMap<>();
+appearance.put("auto-state", subVisualBlockId);
+appearances.put(variantKey, appearance);
+Map<String, Object> variant = new LinkedHashMap<>();
+variant.put("appearance", variantKey);
+variants.put(variantKey, variant);
+}
+stateSection.put("appearances", appearances);
+stateSection.put("variants", variants);
+}
+if (polymerBlock instanceof PolymerHeadBlock headBlock) {
+settings.put("material", "player_head");
+try {
+String skinValue = headBlock.getPolymerSkinValue(defaultState, BlockPos.ORIGIN, ctx);
+if (skinValue != null && !skinValue.isEmpty()) {
+List<Map<String, Object>> clientData = new ArrayList<>();
+Map<String, Object> op = new LinkedHashMap<>();
+op.put("type", "SET");
+op.put("path", "SkullOwner");
+Map<String, Object> profile = new LinkedHashMap<>();
+Map<String, Object> props = new LinkedHashMap<>();
+List<Map<String, Object>> textures = new ArrayList<>();
+Map<String, Object> tex = new LinkedHashMap<>();
+tex.put("Value", skinValue);
+textures.add(tex);
+props.put("textures", textures);
+profile.put("properties", props);
+op.put("value", profile);
+clientData.add(op);
+settings.put("client-bound-data", clientData);
+}
+} catch (Exception ignored) {}
+}
+List<Map<String, Object>> behaviors = inferBehaviors(block, polymerBlock);
+if (!behaviors.isEmpty()) {
+blockConfig.put("behaviors", behaviors);
+}
+if (settings.get("material") == null) {
+throw new IllegalStateException("Material detection failed");
+}
+blockConfig.put("settings", settings);
+if (!stateSection.isEmpty()) {
+blockConfig.put("state", stateSection);
+}
+} catch (Exception e) {
+blockConfig.put("_error", "Conversion failed: " + e.getMessage());
+settings.put("material", "barrier");
+blockConfig.put("settings", settings);
+}
+return blockConfig;
+}
+private static ServerPlayerEntity createSafeFakePlayer() {
+try {
+return new ServerPlayerEntity(
+(MinecraftServer) null,
+FakeWorld.INSTANCE_UNSAFE,
+new GameProfile(UUID.randomUUID(), "PolymerBlockConverter"),
+null
+) {
+@Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
+};
+} catch (Exception e) {
+return null;
+}
+}
+private static Map<String, Object> createPropertyDefinition(Property<?> property, BlockState defaultState) {
+Map<String, Object> def = new LinkedHashMap<>();
+String type = "string";
+String name = property.getName();
+if (property instanceof IntProperty) type = "int";
+else if (property instanceof BooleanProperty) type = "boolean";
+else if (property instanceof DirectionProperty) {
+if (name.equals("facing")) type = "horizontal_direction";
+else if (name.equals("axis")) type = "axis";
+else type = "direction";
+}
+else if (property instanceof EnumProperty) {
+if (name.equals("facing")) type = "4-direction";
+else if (name.equals("half")) type = "double_block_half";
+else if (name.equals("shape")) type = "stairs_shape";
+else if (name.equals("hinge")) type = "hinge";
+else type = "string";
+}
+def.put("type", type);
+if (property instanceof IntProperty intProp) {
+def.put("range", intProp.getMin() + "~" + intProp.getMax());
+} else {
+String range = property.getValues().stream()
+.map(v -> v.toString().toLowerCase())
+.collect(Collectors.joining(","));
+def.put("range", range);
+}
+def.put("default", defaultState.get(property).toString().toLowerCase());
+return def;
+}
+private static String getVariantKey(BlockState state, Collection<Property<?>> properties) {
+return properties.stream()
+.map(prop -> prop.getName() + "=" + state.get(prop).toString().toLowerCase())
+.collect(Collectors.joining(","));
+}
+private static List<String> inferToolTags(BlockState state) {
+List<String> tags = new ArrayList<>();
+if (state.isIn(BlockTags.PICKAXE_MINEABLE)) tags.add("minecraft:mineable/pickaxe");
+if (state.isIn(BlockTags.AXE_MINEABLE)) tags.add("minecraft:mineable/axe");
+if (state.isIn(BlockTags.SHOVEL_MINEABLE)) tags.add("minecraft:mineable/shovel");
+if (state.isIn(BlockTags.HOE_MINEABLE)) tags.add("minecraft:mineable/hoe");
+return tags;
+}
+private static List<Map<String, Object>> inferBehaviors(Block block, PolymerBlock polymerBlock) {
+List<Map<String, Object>> list = new ArrayList<>();
+if (block instanceof FallingBlock) list.add(Map.of("type", "falling_block"));
+if (block instanceof CropBlock) list.add(Map.of("type", "crop_block"));
+if (block instanceof DoorBlock) list.add(Map.of("type", "door_block"));
+if (block instanceof TrapdoorBlock) list.add(Map.of("type", "trapdoor_block"));
+if (block instanceof SlabBlock) list.add(Map.of("type", "slab_block"));
+if (block instanceof StairsBlock) list.add(Map.of("type", "stairs_block"));
+if (block instanceof FenceBlock) list.add(Map.of("type", "fence_block"));
+if (block instanceof FenceGateBlock) list.add(Map.of("type", "fence_gate_block"));
+if (block instanceof WallBlock) list.add(Map.of("type", "wall_block"));
+if (block instanceof PressurePlateBlock) list.add(Map.of("type", "pressure_plate_block"));
+if (block instanceof ButtonBlock) list.add(Map.of("type", "button_block"));
+if (block instanceof LeavesBlock) list.add(Map.of("type", "leaves_block"));
+if (block instanceof SignBlock) list.add(Map.of("type", "sign_block"));
+if (block instanceof ChestBlock) list.add(Map.of("type", "storage_block"));
+if (block instanceof RedstoneTorchBlock) list.add(Map.of("type", "redstone_torch_block"));
+if (polymerBlock instanceof PolymerHeadBlock) {
+list.add(Map.of("type", "bush_block"));
+}
+return list;
+}
+}
+
+==================================================
+FILE: remappedSrc\top\ellan\polymerconverter\ConverterLogic.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.core.api.item.PolymerItem;
+import eu.pb4.polymer.core.api.item.PolymerItemUtils;
+import xyz.nucleoid.packettweaker.PacketContext;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.*;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.tooltip.TooltipType;
+import net.minecraft.item.equipment.ArmorTrim;
+import net.minecraft.registry.Registries;
+import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
+import net.minecraft.util.Rarity;
+import java.util.*;
+public class ConverterLogic {
+public static Map<String, Object> convert(PolymerItem polymerItem) {
+Map<String, Object> itemConfig = new LinkedHashMap<>();
+ItemStack serverStack = new ItemStack((Item) polymerItem);
+PacketContext ctx = PacketContext.create();
+try {
+Item clientBaseItem = polymerItem.getPolymerItem(serverStack, ctx);
+itemConfig.put("material", Registries.ITEM.getId(clientBaseItem).toString());
+Identifier modelId = polymerItem.getPolymerItemModel(serverStack, ctx);
+if (modelId != null) {
+Map<String, Object> modelData = new LinkedHashMap<>();
+modelData.put("type", "minecraft:model");
+modelData.put("path", modelId.toString());
+itemConfig.put("model", modelData);
+}
+ItemStack clientStack = PolymerItemUtils.getPolymerItemStack(serverStack, TooltipType.BASIC, ctx);
+Map<String, Object> dataMap = new LinkedHashMap<>();
+Map<String, Object> components = new LinkedHashMap<>();
+if (clientStack.hasCustomName()) {
+dataMap.put("item-name", "<!i>" + clientStack.getName().getString());
+}
+if (clientStack.contains(DataComponentTypes.LORE)) {
+LoreComponent lore = clientStack.get(DataComponentTypes.LORE);
+if (lore != null) {
+List<String> loreLines = new ArrayList<>();
+for (Text line : lore.lines()) {
+loreLines.add("<!i>" + line.getString());
+}
+dataMap.put("lore", loreLines);
+}
+}
+if (clientStack.contains(DataComponentTypes.CUSTOM_MODEL_DATA)) {
+Object cmdValue = clientStack.get(DataComponentTypes.CUSTOM_MODEL_DATA).value();
+if (cmdValue instanceof Integer intVal) {
+itemConfig.put("custom-model-data", intVal);
+} else if (cmdValue instanceof List<?> list && !list.isEmpty()) {
+Object first = list.get(0);
+if (first instanceof Number num) {
+itemConfig.put("custom-model-data", (int) num.floatValue());
+}
+}
+}
+if (!itemConfig.containsKey("model") && clientStack.contains(DataComponentTypes.ITEM_MODEL)) {
+Identifier itemModelId = clientStack.get(DataComponentTypes.ITEM_MODEL);
+if (itemModelId != null) {
+Map<String, Object> modelData = new LinkedHashMap<>();
+modelData.put("type", "minecraft:model");
+modelData.put("path", itemModelId.toString());
+itemConfig.put("model", modelData);
+}
+}
+if (clientStack.contains(DataComponentTypes.ENCHANTMENTS)) {
+ItemEnchantmentsComponent enchants = clientStack.get(DataComponentTypes.ENCHANTMENTS);
+if (enchants != null && !enchants.isEmpty()) {
+Map<String, Integer> enchConfig = new LinkedHashMap<>();
+enchants.getEnchantmentEntries().forEach(entry -> {
+String enchId = entry.getKey().getIdAsString();
+int level = entry.getIntValue();
+enchConfig.put(enchId, level);
+});
+dataMap.put("enchantments", enchConfig);
+}
+}
+if (clientStack.contains(DataComponentTypes.ATTRIBUTE_MODIFIERS)) {
+AttributeModifiersComponent attrs = clientStack.get(DataComponentTypes.ATTRIBUTE_MODIFIERS);
+if (attrs != null && !attrs.modifiers().isEmpty()) {
+List<Map<String, Object>> attrList = new ArrayList<>();
+attrs.modifiers().forEach(entry -> {
+Map<String, Object> attrMap = new LinkedHashMap<>();
+attrMap.put("type", entry.attribute().getIdAsString());
+attrMap.put("slot", entry.slot().asString());
+attrMap.put("amount", entry.modifier().value());
+attrMap.put("operation", entry.modifier().operation().asString());
+attrMap.put("id", entry.modifier().id().toString());
+attrList.add(attrMap);
+});
+Map<String, Object> attrComp = new LinkedHashMap<>();
+attrComp.put("modifiers", attrList);
+components.put("minecraft:attribute_modifiers", attrComp);
+}
+}
+if (clientStack.contains(DataComponentTypes.DYED_COLOR)) {
+DyedColorComponent dyedColor = clientStack.get(DataComponentTypes.DYED_COLOR);
+if (dyedColor != null) {
+int rgb = dyedColor.rgb();
+String hex = String.format("#%06X", (0xFFFFFF & rgb));
+dataMap.put("dyed-color", hex);
+}
+}
+if (clientStack.contains(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE)) {
+Boolean glint = clientStack.get(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE);
+if (glint != null) {
+dataMap.put("enchantment-glint-override", glint);
+}
+}
+if (clientStack.contains(DataComponentTypes.UNBREAKABLE)) {
+dataMap.put("unbreakable", true);
+}
+if (clientStack.contains(DataComponentTypes.MAX_DAMAGE)) {
+dataMap.put("max-damage", clientStack.get(DataComponentTypes.MAX_DAMAGE));
+}
+if (clientStack.contains(DataComponentTypes.DAMAGE)) {
+dataMap.put("damage", clientStack.get(DataComponentTypes.DAMAGE));
+}
+if (clientStack.contains(DataComponentTypes.REPAIR_COST)) {
+dataMap.put("repair-cost", clientStack.get(DataComponentTypes.REPAIR_COST));
+}
+if (clientStack.contains(DataComponentTypes.FOOD)) {
+FoodComponent food = clientStack.get(DataComponentTypes.FOOD);
+if (food != null) {
+Map<String, Object> foodMap = new LinkedHashMap<>();
+foodMap.put("nutrition", food.nutrition());
+foodMap.put("saturation", food.saturation());
+foodMap.put("can_always_eat", food.canAlwaysEat());
+components.put("minecraft:food", foodMap);
+}
+}
+if (clientStack.contains(DataComponentTypes.RARITY)) {
+Rarity rarity = clientStack.get(DataComponentTypes.RARITY);
+if (rarity != null) {
+dataMap.put("rarity", rarity.name().toLowerCase());
+}
+}
+if (clientStack.contains(DataComponentTypes.TOOLTIP_STYLE)) {
+Identifier style = clientStack.get(DataComponentTypes.TOOLTIP_STYLE);
+if (style != null) {
+dataMap.put("tooltip-style", style.toString());
+}
+}
+if (clientStack.contains(DataComponentTypes.TRIM)) {
+ArmorTrim trim = clientStack.get(DataComponentTypes.TRIM);
+if (trim != null) {
+Map<String, Object> trimMap = new LinkedHashMap<>();
+trimMap.put("material", trim.material().value().getIdAsString());
+trimMap.put("pattern", trim.pattern().value().getIdAsString());
+components.put("minecraft:trim", trimMap);
+}
+}
+if (clientStack.contains(DataComponentTypes.EQUIPPABLE)) {
+EquippableComponent equippable = clientStack.get(DataComponentTypes.EQUIPPABLE);
+if (equippable != null) {
+Map<String, Object> eqMap = new LinkedHashMap<>();
+eqMap.put("slot", equippable.slot().asString());
+if (equippable.model().isPresent()) {
+eqMap.put("model", equippable.model().get().toString());
+}
+components.put("minecraft:equippable", eqMap);
+}
+}
+if (!components.isEmpty()) {
+dataMap.put("components", components);
+}
+if (!dataMap.isEmpty()) {
+itemConfig.put("data", dataMap);
+}
+} catch (Exception e) {
+itemConfig.put("_error", "Conversion error: " + e.getMessage());
+itemConfig.put("_error_type", e.getClass().getSimpleName());
+itemConfig.put("material", "barrier");
+}
+return itemConfig;
+}
+}
+
+==================================================
+FILE: remappedSrc\top\ellan\polymerconverter\EntityConverterLogic.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.common.impl.FakeWorld;
+import eu.pb4.polymer.common.impl.entity.InternalEntityHelpers;
+import eu.pb4.polymer.core.api.entity.PolymerEntity;
+import xyz.nucleoid.packettweaker.PacketContext;
+import eu.pb4.polymer.virtualentity.api.ElementHolder;
+import eu.pb4.polymer.virtualentity.api.elements.Element;
+import eu.pb4.polymer.virtualentity.api.elements.ItemDisplayElement;
+import eu.pb4.polymer.virtualentity.api.elements.TextDisplayElement;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.EntityType;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.data.DataTracker;
+import net.minecraft.item.ArmorItem;
+import net.minecraft.item.ItemStack;
+import net.minecraft.registry.Registries;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.text.Text;
+import net.minecraft.util.Pair;
+import net.minecraft.world.GameMode;
+import com.mojang.authlib.GameProfile;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.lang.reflect.Field;
+import java.util.*;
+public class EntityConverterLogic {
+private static final Logger LOGGER = LoggerFactory.getLogger("PolymerEntityConverter");
+public static Map<String, Object> convert(EntityType<?> entityType) {
+Map<String, Object> furnitureConfig = new LinkedHashMap<>();
+try {
+Entity entity = InternalEntityHelpers.getEntity(entityType);
+if (entity == null) {
+furnitureConfig.put("_error", "Failed to create template entity");
+return furnitureConfig;
+}
+ServerPlayerEntity fakePlayer = createSafeFakePlayer();
+if (fakePlayer == null) {
+furnitureConfig.put("_error", "Failed to create fake player context");
+return furnitureConfig;
+}
+PacketContext ctx = PacketContext.create(fakePlayer);
+List<Map<String, Object>> elements = new ArrayList<>();
+List<Map<String, Object>> hitboxes = new ArrayList<>();
+if (entity instanceof PolymerEntity polymerEntity) {
+LOGGER.info("Converting Polymer entity: {}", Registries.ENTITY_TYPE.getId(entityType));
+List<Pair<EquipmentSlot, ItemStack>> allEquipment = getAllEquipment(entity);
+List<Pair<EquipmentSlot, ItemStack>> visibleEquipment =
+polymerEntity.getPolymerVisibleEquipment(allEquipment, fakePlayer);
+for (Pair<EquipmentSlot, ItemStack> pair : visibleEquipment) {
+if (!pair.getRight().isEmpty()) {
+elements.add(createElementFromEquipment(pair.getRight(), pair.getLeft()));
+}
+}
+EntityType<?> visualType = polymerEntity.getPolymerEntityType(ctx);
+if (isDisplayEntity(visualType)) {
+Map<String, Object> displayElement = new LinkedHashMap<>();
+displayElement.put("position", "0,0,0");
+if (visualType == EntityType.TEXT_DISPLAY) {
+displayElement.put("billboard", "center");
+} else {
+displayElement.put("billboard", "fixed");
+}
+List<DataTracker.SerializedEntry<?>> trackedData = new ArrayList<>();
+try {
+polymerEntity.modifyRawTrackedData(trackedData, fakePlayer, true);
+LOGGER.debug("Extracted {} tracked data entries", trackedData.size());
+} catch (Exception ignored) {}
+applyTrackedDataToElement(displayElement, trackedData, visualType);
+if (visualType == EntityType.ITEM_DISPLAY && !displayElement.containsKey("item")) {
+displayElement.put("item", "minecraft:barrier");
+} else if (visualType == EntityType.TEXT_DISPLAY && !displayElement.containsKey("text")) {
+displayElement.put("text", "Text Display");
+}
+elements.add(displayElement);
+}
+extractElementHolderComponents(entity, elements);
+hitboxes.add(createMainHitbox(entity));
+}
+if (elements.isEmpty()) {
+Map<String, Object> fallback = new LinkedHashMap<>();
+fallback.put("item", "minecraft:barrier");
+fallback.put("position", "0,0,0");
+fallback.put("billboard", "fixed");
+fallback.put("scale", "0.5,0.5,0.5");
+elements.add(fallback);
+}
+Map<String, Object> variants = new LinkedHashMap<>();
+Map<String, Object> defaultVariant = new LinkedHashMap<>();
+defaultVariant.put("elements", elements);
+defaultVariant.put("hitboxes", hitboxes);
+variants.put("default", defaultVariant);
+furnitureConfig.put("variants", variants);
+Map<String, Object> settings = new LinkedHashMap<>();
+settings.put("placement", "ground");
+settings.put("hit-times", 3);
+furnitureConfig.put("settings", settings);
+} catch (Exception e) {
+LOGGER.error("Entity conversion failed", e);
+furnitureConfig.put("_error", "Conversion error: " + e.getMessage());
+}
+return furnitureConfig;
+}
+private static void applyTrackedDataToElement(Map<String, Object> element, List<DataTracker.SerializedEntry<?>> entries, EntityType<?> type) {
+for (DataTracker.SerializedEntry<?> entry : entries) {
+Object value = entry.value();
+if (value instanceof Vector3f vec) {
+if (Math.abs(vec.x - vec.y) < 0.001 && Math.abs(vec.y - vec.z) < 0.001 && Math.abs(vec.x) > 0.01) {
+element.put("scale", String.format("%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
+} else {
+element.put("translation", String.format("%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
+}
+} else if (value instanceof Quaternionf quat) {
+element.put("rotation", String.format("%.3f,%.3f,%.3f,%.3f", quat.x, quat.y, quat.z, quat.w));
+} else if (value instanceof ItemStack stack && type == EntityType.ITEM_DISPLAY) {
+element.put("item", Registries.ITEM.getId(stack.getItem()).toString());
+} else if (value instanceof Text text && type == EntityType.TEXT_DISPLAY) {
+element.put("text", text.getString());
+}
+}
+}
+private static void extractElementHolderComponents(Entity entity, List<Map<String, Object>> elements) {
+try {
+for (Field field : entity.getClass().getDeclaredFields()) {
+if (ElementHolder.class.isAssignableFrom(field.getType())) {
+field.setAccessible(true);
+ElementHolder holder = (ElementHolder) field.get(entity);
+if (holder != null) {
+for (Element virtualElement : holder.getElements()) {
+Map<String, Object> config = convertVirtualElement(virtualElement);
+if (config != null) {
+elements.add(config);
+}
+}
+}
+}
+}
+} catch (Throwable ignored) {}
+}
+private static Map<String, Object> convertVirtualElement(Element element) {
+Map<String, Object> map = new LinkedHashMap<>();
+map.put("position", "0,0,0");
+map.put("billboard", "fixed");
+Vector3f offset = element.getOffset().toVector3f();
+if (offset.length() > 0.001) {
+map.put("translation", String.format("%.3f,%.3f,%.3f", offset.x, offset.y, offset.z));
+}
+if (element instanceof ItemDisplayElement itemEl) {
+ItemStack stack = itemEl.getItem();
+map.put("item", Registries.ITEM.getId(stack.getItem()).toString());
+Vector3f scale = itemEl.getScale();
+if (scale != null) map.put("scale", String.format("%.3f,%.3f,%.3f", scale.x, scale.y, scale.z));
+Quaternionf rot = itemEl.getRightRotation();
+if (rot != null) map.put("rotation", String.format("%.3f,%.3f,%.3f,%.3f", rot.x, rot.y, rot.z, rot.w));
+return map;
+} else if (element instanceof TextDisplayElement textEl) {
+map.put("text", textEl.getText().getString());
+map.put("billboard", "center");
+return map;
+}
+return null;
+}
+private static ServerPlayerEntity createSafeFakePlayer() {
+try {
+return new ServerPlayerEntity(
+(MinecraftServer) null,
+FakeWorld.INSTANCE_UNSAFE,
+new GameProfile(UUID.randomUUID(), "PolymerConverter"),
+null
+) {
+@Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
+};
+} catch (Exception e) {
+return null;
+}
+}
+private static List<Pair<EquipmentSlot, ItemStack>> getAllEquipment(Entity entity) {
+List<Pair<EquipmentSlot, ItemStack>> list = new ArrayList<>();
+if (entity instanceof LivingEntity living) {
+for (EquipmentSlot slot : EquipmentSlot.values()) {
+list.add(new Pair<>(slot, living.getEquippedStack(slot)));
+}
+}
+return list;
+}
+private static Map<String, Object> createElementFromEquipment(ItemStack stack, EquipmentSlot slot) {
+Map<String, Object> element = new LinkedHashMap<>();
+element.put("item", Registries.ITEM.getId(stack.getItem()).toString());
+element.put("display-transform", getDisplayContextForSlot(slot));
+element.put("position", "0,0,0");
+element.put("billboard", "fixed");
+applySlotTransform(element, slot);
+return element;
+}
+private static String getDisplayContextForSlot(EquipmentSlot slot) {
+return switch (slot) {
+case HEAD -> "head";
+case MAINHAND -> "third_person_right_hand";
+case OFFHAND -> "third_person_left_hand";
+default -> "none";
+};
+}
+private static void applySlotTransform(Map<String, Object> element, EquipmentSlot slot) {
+switch (slot) {
+case HEAD:
+element.put("translation", "0.0,1.5,0.0");
+break;
+case MAINHAND:
+element.put("translation", "0.4,0.8,0.0");
+element.put("rotation", "0.0,0.0,-0.383,0.924");
+break;
+case OFFHAND:
+element.put("translation", "-0.4,0.8,0.0");
+element.put("rotation", "0.0,0.0,0.383,0.924");
+break;
+}
+}
+private static Map<String, Object> createMainHitbox(Entity entity) {
+Map<String, Object> box = new LinkedHashMap<>();
+box.put("type", "interaction");
+box.put("width", entity.getWidth());
+box.put("height", entity.getHeight());
+box.put("position", "0,0,0");
+box.put("invisible", true);
+if (entity instanceof LivingEntity) {
+box.put("interactive", true);
+box.put("can-be-hit-by-projectile", true);
+} else {
+box.put("blocks-building", true);
+}
+return box;
+}
+private static boolean isDisplayEntity(EntityType<?> type) {
+return type == EntityType.ITEM_DISPLAY ||
+type == EntityType.BLOCK_DISPLAY ||
+type == EntityType.TEXT_DISPLAY;
+}
+}
+
+==================================================
+FILE: remappedSrc\top\ellan\polymerconverter\LanguageConverterLogic.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.core.api.block.PolymerBlock;
+import eu.pb4.polymer.core.api.item.PolymerItem;
+import eu.pb4.polymer.core.api.item.PolymerItemUtils;
+import xyz.nucleoid.packettweaker.PacketContext;
+import net.minecraft.block.Block;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.tooltip.TooltipType;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.Identifier;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.TreeMap;
+public class LanguageConverterLogic {
+public static Map<String, Object> convert() {
+Map<String, Object> rootConfig = new LinkedHashMap<>();
+Map<String, String> itemLangEn = new TreeMap<>();
+Map<String, String> blockLangEn = new TreeMap<>();
+PacketContext ctx = PacketContext.create();
+for (Identifier id : Registries.ITEM.getIds()) {
+if (id.getNamespace().equals("minecraft")) continue;
+Item item = Registries.ITEM.get(id);
+if (item instanceof PolymerItem) {
+String key = "item." + id.getNamespace() + "." + id.getPath();
+ItemStack clientStack = PolymerItemUtils.getPolymerItemStack(
+item.getDefaultStack(),
+TooltipType.BASIC,
+ctx
+);
+String name = clientStack.getName().getString();
+itemLangEn.put(key, "<!i>" + name);
+}
+}
+for (Identifier id : Registries.BLOCK.getIds()) {
+if (id.getNamespace().equals("minecraft")) continue;
+Block block = Registries.BLOCK.get(id);
+if (block instanceof PolymerBlock) {
+String key = "block_name:" + id.getNamespace() + ":" + id.getPath();
+String name = block.getName().getString();
+blockLangEn.put(key, "<!i>" + name);
+}
+}
+Map<String, Object> itemsSection = new LinkedHashMap<>();
+itemsSection.put("en_us", itemLangEn);
+itemsSection.put("zh_cn", new LinkedHashMap<>(itemLangEn));
+rootConfig.put("lang#items", itemsSection);
+Map<String, Object> blocksSection = new LinkedHashMap<>();
+blocksSection.put("en_us", blockLangEn);
+blocksSection.put("zh_cn", new LinkedHashMap<>(blockLangEn));
+rootConfig.put("lang#blocks", blocksSection);
+return rootConfig;
+}
+}
+
+==================================================
+FILE: remappedSrc\top\ellan\polymerconverter\PolymerConverterMod.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.core.api.block.PolymerBlock;
+import eu.pb4.polymer.core.api.item.PolymerItem;
+import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.minecraft.block.Block;
+import net.minecraft.entity.EntityType;
+import net.minecraft.registry.Registries;
+import net.minecraft.server.command.CommandManager;
+import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.LinkedHashMap;
+import java.util.Map;
+public class PolymerConverterMod implements ModInitializer {
+public static final String MOD_ID = "polymer_converter";
+public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+@Override
+public void onInitialize() {
+LOGGER.info("PolymerConverter 初始化中...");
+CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+dispatcher.register(CommandManager.literal("poly2ce")
+.requires(source -> source.hasPermissionLevel(4))
+.executes(context -> {
+context.getSource().sendFeedback(() -> Text.literal("开始全量转换..."), false);
+int itemCount = runItemConversion();
+int blockCount = runBlockConversion();
+int entityCount = runEntityConversion();
+int soundCount = runSoundConversion();
+int langCount = runLangConversion();
+context.getSource().sendFeedback(() -> Text.literal(
+String.format("转换完成！\n物品: %d\n方块: %d\n实体: %d\n声音: %d\n语言条目: %d",
+itemCount, blockCount, entityCount, soundCount, langCount)
+), true);
+context.getSource().sendFeedback(() -> Text.literal("文件已保存至 config/craft-engine/ 目录"), false);
+return 1;
+}));
+});
+}
+private int runItemConversion() {
+Map<String, Object> rootConfig = new LinkedHashMap<>();
+Map<String, Object> itemsSection = new LinkedHashMap<>();
+int count = 0;
+for (Identifier id : Registries.ITEM.getIds()) {
+if (Registries.ITEM.get(id) instanceof PolymerItem polymerItem) {
+String key = id.getNamespace() + ":" + id.getPath();
+itemsSection.put(key, ConverterLogic.convert(polymerItem));
+count++;
+}
+}
+rootConfig.put("items", itemsSection);
+writeConfig("converted_items.yml", rootConfig);
+return count;
+}
+private int runBlockConversion() {
+Map<String, Object> rootConfig = new LinkedHashMap<>();
+Map<String, Object> blocksSection = new LinkedHashMap<>();
+int count = 0;
+for (Identifier id : Registries.BLOCK.getIds()) {
+Block block = Registries.BLOCK.get(id);
+if (block instanceof PolymerBlock polymerBlock) {
+String key = id.getNamespace() + ":" + id.getPath();
+blocksSection.put(key, BlockConverterLogic.convert(polymerBlock));
+count++;
+}
+}
+rootConfig.put("blocks", blocksSection);
+writeConfig("converted_blocks.yml", rootConfig);
+return count;
+}
+private int runEntityConversion() {
+Map<String, Object> rootConfig = new LinkedHashMap<>();
+Map<String, Object> furnitureSection = new LinkedHashMap<>();
+int count = 0;
+for (Identifier id : Registries.ENTITY_TYPE.getIds()) {
+if (id.getNamespace().equals("minecraft")) continue;
+EntityType<?> type = Registries.ENTITY_TYPE.get(id);
+Map<String, Object> config = EntityConverterLogic.convert(type);
+if (!config.isEmpty() && !config.containsKey("_note")) {
+String key = id.getNamespace() + ":" + id.getPath();
+furnitureSection.put(key, config);
+count++;
+}
+}
+rootConfig.put("furniture", furnitureSection);
+writeConfig("converted_furniture.yml", rootConfig);
+return count;
+}
+private int runSoundConversion() {
+Map<String, Object> config = SoundConverterLogic.convert();
+writeConfig("converted_sounds.yml", config);
+if (config.get("sounds") instanceof Map<?,?> map) {
+return map.size();
+}
+return 0;
+}
+private int runLangConversion() {
+Map<String, Object> config = LanguageConverterLogic.convert();
+writeConfig("converted_lang.yml", config);
+int count = 0;
+try {
+Map<?,?> items = (Map<?,?>) ((Map<?,?>) config.get("lang#items")).get("en_us");
+Map<?,?> blocks = (Map<?,?>) ((Map<?,?>) config.get("lang#blocks")).get("en_us");
+count = items.size() + blocks.size();
+} catch (Exception ignored) {}
+return count;
+}
+private void writeConfig(String fileName, Map<String, Object> data) {
+try {
+Path configDir = Paths.get("config", "craft-engine");
+if (!Files.exists(configDir)) {
+Files.createDirectories(configDir);
+}
+Path outputPath = configDir.resolve(fileName);
+Files.writeString(outputPath, SimpleYamlWriter.dump(data));
+LOGGER.info("已生成: " + fileName);
+} catch (IOException e) {
+LOGGER.error("写入失败: " + fileName, e);
+}
+}
+}
+
+==================================================
+FILE: remappedSrc\top\ellan\polymerconverter\SimpleYamlWriter.java
+==================================================
+
+package top.ellan.polymerconverter;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+public class SimpleYamlWriter {
+private static final Pattern SPECIAL_CHARS = Pattern.compile("[#:\\[\\]{},\"'\\n]|$\\s|\\s^");
+public static String dump(Map<String, Object> data) {
+StringBuilder sb = new StringBuilder();
+dumpMap(sb, data, 0);
+return sb.toString();
+}
+@SuppressWarnings("unchecked")
+private static void dumpMap(StringBuilder sb, Map<String, Object> map, int indent) {
+String spaces = " ".repeat(indent);
+for (Map.Entry<String, Object> entry : map.entrySet()) {
+String key = entry.getKey();
+Object value = entry.getValue();
+if (value == null) continue;
+sb.append(spaces).append(key).append(":");
+if (value instanceof Map) {
+Map<String, Object> subMap = (Map<String, Object>) value;
+if (subMap.isEmpty()) {
+sb.append(" {}\n");
+} else {
+sb.append("\n");
+dumpMap(sb, subMap, indent + 2);
+}
+} else if (value instanceof List) {
+List<?> list = (List<?>) value;
+if (list.isEmpty()) {
+sb.append(" []\n");
+} else {
+sb.append("\n");
+dumpList(sb, list, indent);
+}
+} else {
+sb.append(" ").append(formatValue(value)).append("\n");
+}
+}
+}
+@SuppressWarnings("unchecked")
+private static void dumpList(StringBuilder sb, List<?> list, int indent) {
+String spaces = " ".repeat(indent);
+for (Object item : list) {
+sb.append(spaces).append("-");
+if (item instanceof Map) {
+sb.append("\n");
+dumpMap(sb, (Map<String, Object>) item, indent + 2);
+} else if (item instanceof List) {
+sb.append("\n");
+dumpList(sb, (List<?>) item, indent + 2);
+} else {
+sb.append(" ").append(formatValue(item)).append("\n");
+}
+}
+}
+private static String formatValue(Object value) {
+if (value == null) return "null";
+String str = value.toString();
+if (value instanceof Number || value instanceof Boolean) {
+return str;
+}
+boolean needsQuote = SPECIAL_CHARS.matcher(str).find()
+|| str.contains("<")
+|| str.contains(">")
+|| isNumeric(str)
+|| str.equalsIgnoreCase("true")
+|| str.equalsIgnoreCase("false")
+|| str.isEmpty();
+if (needsQuote) {
+return "\"" + str.replace("\"", "\\\"") + "\"";
+}
+return str;
+}
+private static boolean isNumeric(String str) {
+try {
+Double.parseDouble(str);
+return true;
+} catch (NumberFormatException e) {
+return false;
+}
+}
+}
+
+==================================================
+FILE: remappedSrc\top\ellan\polymerconverter\SoundConverterLogic.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.core.api.other.PolymerSoundEvent;
+import net.minecraft.registry.Registries;
+import net.minecraft.sound.SoundEvent;
+import net.minecraft.util.Identifier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.lang.reflect.Field;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.UUID;
+public class SoundConverterLogic {
+private static final Logger LOGGER = LoggerFactory.getLogger("PolymerSoundConverter");
+public static Map<String, Object> convert() {
+Map<String, Object> rootConfig = new LinkedHashMap<>();
+Map<String, Object> sounds = new LinkedHashMap<>();
+int polymerCount = 0;
+int moddedCount = 0;
+for (Identifier id : Registries.SOUND_EVENT.getIds()) {
+if (id.getNamespace().equals("minecraft")) continue;
+SoundEvent event = Registries.SOUND_EVENT.get(id);
+Map<String, Object> entry = new LinkedHashMap<>();
+if (event instanceof PolymerSoundEvent polymerSound) {
+polymerCount++;
+entry.put("type", "polymer");
+try {
+Field fallbackField = PolymerSoundEvent.class.getDeclaredField("polymerSound");
+fallbackField.setAccessible(true);
+SoundEvent fallback = (SoundEvent) fallbackField.get(polymerSound);
+if (fallback != null) {
+entry.put("fallback", fallback.getId().toString());
+} else {
+entry.put("fallback", "none");
+}
+try {
+Field sourceField = PolymerSoundEvent.class.getDeclaredField("source");
+sourceField.setAccessible(true);
+UUID source = (UUID) sourceField.get(polymerSound);
+if (source != null) {
+entry.put("resource_pack_uuid", source.toString());
+}
+} catch (NoSuchFieldException ignored) {
+}
+} catch (NoSuchFieldException e) {
+entry.put("_error", "field_not_found: polymerSound");
+} catch (IllegalAccessException e) {
+entry.put("_error", "access_denied");
+} catch (Exception e) {
+entry.put("_error", "unknown: " + e.getMessage());
+}
+}
+else {
+moddedCount++;
+entry.put("type", "modded");
+}
+sounds.put(id.toString(), entry);
+}
+LOGGER.info("Sound conversion finished. Polymer: {}, Modded: {}", polymerCount, moddedCount);
+rootConfig.put("sounds", sounds);
+return rootConfig;
+}
+}
+
+==================================================
+FILE: src\main\java\top\ellan\Poly2ce.java
+==================================================
+
+package top.ellan;
+import net.fabricmc.api.ModInitializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+public class Poly2ce implements ModInitializer {
+public static final String MOD_ID = "poly2ce";
+public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+@Override
+public void onInitialize() {
+LOGGER.info("Hello Fabric world!");
+}
+}
+
+==================================================
+FILE: src\main\java\top\ellan\polymerconverter\BlockConverterLogic.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.common.impl.FakeWorld;
+import eu.pb4.polymer.core.api.block.PolymerBlock;
+import eu.pb4.polymer.core.api.block.PolymerBlockUtils;
+import eu.pb4.polymer.core.api.block.PolymerHeadBlock;
+import eu.pb4.polymer.core.api.other.PacketContext;
+import net.minecraft.block.*;
+import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.BlockTags;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.state.StateManager;
+import net.minecraft.state.property.*;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.GameMode;
+import com.mojang.authlib.GameProfile;
+import java.util.*;
+import java.util.stream.Collectors;
+public class BlockConverterLogic {
+public static Map<String, Object> convert(PolymerBlock polymerBlock) {
+Map<String, Object> blockConfig = new LinkedHashMap<>();
+Map<String, Object> settings = new LinkedHashMap<>();
+Block block = (Block) polymerBlock;
+BlockState defaultState = block.getDefaultState();
+ServerPlayerEntity fakePlayer = createSafeFakePlayer();
+PacketContext ctx = PacketContext.create(fakePlayer);
+try {
+BlockState visualState = PolymerBlockUtils.getPolymerBlockState(defaultState, ctx);
+Block visualBlock = visualState.getBlock();
+String materialId = Registries.BLOCK.getId(visualBlock).toString();
+settings.put("material", materialId);
+settings.put("hardness", block.getHardness());
+settings.put("resistance", block.getBlastResistance());
+if (defaultState.getLuminance() > 0) {
+settings.put("luminance", defaultState.getLuminance());
+}
+try {
+settings.put("map-color", defaultState.getMapColor(null, null).id);
+} catch (Exception ignored) {}
+if (defaultState.isReplaceable()) settings.put("replaceable", true);
+settings.put("push-reaction", defaultState.getPistonBehavior().name().toLowerCase());
+Map<String, String> sounds = new LinkedHashMap<>();
+String blockIdPath = Registries.BLOCK.getId(visualBlock).getPath();
+sounds.put("break", "minecraft:block." + blockIdPath + ".break");
+sounds.put("place", "minecraft:block." + blockIdPath + ".place");
+sounds.put("hit", "minecraft:block." + blockIdPath + ".hit");
+sounds.put("step", "minecraft:block." + blockIdPath + ".step");
+settings.put("sounds", sounds);
+List<String> tags = inferToolTags(defaultState);
+if (!tags.isEmpty()) {
+settings.put("tags", tags);
+}
+try {
+polymerBlock.onPolymerBlockSend(defaultState, BlockPos.ORIGIN.toMutable(), new PacketContext.NotNullWithPlayer(ctx) {
+@Override
+public ServerPlayerEntity getPlayer() {
+return fakePlayer;
+}
+});
+} catch (Exception ignored) {
+}
+StateManager<Block, BlockState> stateManager = block.getStateManager();
+Collection<Property<?>> properties = stateManager.getProperties();
+Map<String, Object> stateSection = new LinkedHashMap<>();
+if (!properties.isEmpty()) {
+Map<String, Object> propConfig = new LinkedHashMap<>();
+for (Property<?> prop : properties) {
+propConfig.put(prop.getName(), createPropertyDefinition(prop, defaultState));
+}
+stateSection.put("properties", propConfig);
+Map<String, Object> appearances = new LinkedHashMap<>();
+Map<String, Object> variants = new LinkedHashMap<>();
+for (BlockState state : stateManager.getStates()) {
+String variantKey = getVariantKey(state, properties);
+BlockState subVisualState = PolymerBlockUtils.getBlockStateSafely(polymerBlock, state, ctx);
+String subVisualBlockId = Registries.BLOCK.getId(subVisualState.getBlock()).toString();
+Map<String, Object> appearance = new LinkedHashMap<>();
+appearance.put("auto-state", subVisualBlockId);
+appearances.put(variantKey, appearance);
+Map<String, Object> variant = new LinkedHashMap<>();
+variant.put("appearance", variantKey);
+variants.put(variantKey, variant);
+}
+stateSection.put("appearances", appearances);
+stateSection.put("variants", variants);
+}
+if (polymerBlock instanceof PolymerHeadBlock headBlock) {
+settings.put("material", "player_head");
+try {
+String skinValue = headBlock.getPolymerSkinValue(defaultState, BlockPos.ORIGIN, ctx);
+if (skinValue != null && !skinValue.isEmpty()) {
+List<Map<String, Object>> clientData = new ArrayList<>();
+Map<String, Object> op = new LinkedHashMap<>();
+op.put("type", "SET");
+op.put("path", "SkullOwner");
+Map<String, Object> profile = new LinkedHashMap<>();
+Map<String, Object> props = new LinkedHashMap<>();
+List<Map<String, Object>> textures = new ArrayList<>();
+Map<String, Object> tex = new LinkedHashMap<>();
+tex.put("Value", skinValue);
+textures.add(tex);
+props.put("textures", textures);
+profile.put("properties", props);
+op.put("value", profile);
+clientData.add(op);
+settings.put("client-bound-data", clientData);
+}
+} catch (Exception ignored) {}
+}
+List<Map<String, Object>> behaviors = inferBehaviors(block, polymerBlock);
+if (!behaviors.isEmpty()) {
+blockConfig.put("behaviors", behaviors);
+}
+if (settings.get("material") == null) {
+throw new IllegalStateException("Material detection failed");
+}
+blockConfig.put("settings", settings);
+if (!stateSection.isEmpty()) {
+blockConfig.put("state", stateSection);
+}
+} catch (Exception e) {
+blockConfig.put("_error", "Conversion failed: " + e.getMessage());
+settings.put("material", "barrier");
+blockConfig.put("settings", settings);
+}
+return blockConfig;
+}
+private static ServerPlayerEntity createSafeFakePlayer() {
+try {
+return new ServerPlayerEntity(
+(MinecraftServer) null,
+FakeWorld.INSTANCE_UNSAFE,
+new GameProfile(UUID.randomUUID(), "PolymerBlockConverter"),
+null
+) {
+@Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
+};
+} catch (Exception e) {
+return null;
+}
+}
+private static Map<String, Object> createPropertyDefinition(Property<?> property, BlockState defaultState) {
+Map<String, Object> def = new LinkedHashMap<>();
+String type = "string";
+String name = property.getName();
+if (property instanceof IntProperty) type = "int";
+else if (property instanceof BooleanProperty) type = "boolean";
+else if (property instanceof DirectionProperty) {
+if (name.equals("facing")) type = "horizontal_direction";
+else if (name.equals("axis")) type = "axis";
+else type = "direction";
+}
+else if (property instanceof EnumProperty) {
+if (name.equals("facing")) type = "4-direction";
+else if (name.equals("half")) type = "double_block_half";
+else if (name.equals("shape")) type = "stairs_shape";
+else if (name.equals("hinge")) type = "hinge";
+else type = "string";
+}
+def.put("type", type);
+if (property instanceof IntProperty intProp) {
+def.put("range", intProp.getMin() + "~" + intProp.getMax());
+} else {
+String range = property.getValues().stream()
+.map(v -> v.toString().toLowerCase())
+.collect(Collectors.joining(","));
+def.put("range", range);
+}
+def.put("default", defaultState.get(property).toString().toLowerCase());
+return def;
+}
+private static String getVariantKey(BlockState state, Collection<Property<?>> properties) {
+return properties.stream()
+.map(prop -> prop.getName() + "=" + state.get(prop).toString().toLowerCase())
+.collect(Collectors.joining(","));
+}
+private static List<String> inferToolTags(BlockState state) {
+List<String> tags = new ArrayList<>();
+if (state.isIn(BlockTags.PICKAXE_MINEABLE)) tags.add("minecraft:mineable/pickaxe");
+if (state.isIn(BlockTags.AXE_MINEABLE)) tags.add("minecraft:mineable/axe");
+if (state.isIn(BlockTags.SHOVEL_MINEABLE)) tags.add("minecraft:mineable/shovel");
+if (state.isIn(BlockTags.HOE_MINEABLE)) tags.add("minecraft:mineable/hoe");
+return tags;
+}
+private static List<Map<String, Object>> inferBehaviors(Block block, PolymerBlock polymerBlock) {
+List<Map<String, Object>> list = new ArrayList<>();
+if (block instanceof FallingBlock) list.add(Map.of("type", "falling_block"));
+if (block instanceof CropBlock) list.add(Map.of("type", "crop_block"));
+if (block instanceof DoorBlock) list.add(Map.of("type", "door_block"));
+if (block instanceof TrapdoorBlock) list.add(Map.of("type", "trapdoor_block"));
+if (block instanceof SlabBlock) list.add(Map.of("type", "slab_block"));
+if (block instanceof StairsBlock) list.add(Map.of("type", "stairs_block"));
+if (block instanceof FenceBlock) list.add(Map.of("type", "fence_block"));
+if (block instanceof FenceGateBlock) list.add(Map.of("type", "fence_gate_block"));
+if (block instanceof WallBlock) list.add(Map.of("type", "wall_block"));
+if (block instanceof PressurePlateBlock) list.add(Map.of("type", "pressure_plate_block"));
+if (block instanceof ButtonBlock) list.add(Map.of("type", "button_block"));
+if (block instanceof LeavesBlock) list.add(Map.of("type", "leaves_block"));
+if (block instanceof SignBlock) list.add(Map.of("type", "sign_block"));
+if (block instanceof ChestBlock) list.add(Map.of("type", "storage_block"));
+if (block instanceof RedstoneTorchBlock) list.add(Map.of("type", "redstone_torch_block"));
+if (polymerBlock instanceof PolymerHeadBlock) {
+list.add(Map.of("type", "bush_block"));
+}
+return list;
+}
+}
+
+==================================================
+FILE: src\main\java\top\ellan\polymerconverter\ConverterLogic.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.core.api.item.PolymerItem;
+import eu.pb4.polymer.core.api.item.PolymerItemUtils;
+import xyz.nucleoid.packettweaker.PacketContext;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.*;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.tooltip.TooltipType;
+import net.minecraft.item.equipment.ArmorTrim;
+import net.minecraft.registry.Registries;
+import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
+import net.minecraft.util.Rarity;
+import java.util.*;
+public class ConverterLogic {
+public static Map<String, Object> convert(PolymerItem polymerItem) {
+Map<String, Object> itemConfig = new LinkedHashMap<>();
+ItemStack serverStack = new ItemStack((Item) polymerItem);
+PacketContext ctx = PacketContext.create();
+try {
+Item clientBaseItem = polymerItem.getPolymerItem(serverStack, ctx);
+itemConfig.put("material", Registries.ITEM.getId(clientBaseItem).toString());
+Identifier modelId = polymerItem.getPolymerItemModel(serverStack, ctx);
+if (modelId != null) {
+Map<String, Object> modelData = new LinkedHashMap<>();
+modelData.put("type", "minecraft:model");
+modelData.put("path", modelId.toString());
+itemConfig.put("model", modelData);
+}
+ItemStack clientStack = PolymerItemUtils.getPolymerItemStack(serverStack, TooltipType.BASIC, ctx);
+Map<String, Object> dataMap = new LinkedHashMap<>();
+Map<String, Object> components = new LinkedHashMap<>();
+if (clientStack.hasCustomName()) {
+dataMap.put("item-name", "<!i>" + clientStack.getName().getString());
+}
+if (clientStack.contains(DataComponentTypes.LORE)) {
+LoreComponent lore = clientStack.get(DataComponentTypes.LORE);
+if (lore != null) {
+List<String> loreLines = new ArrayList<>();
+for (Text line : lore.lines()) {
+loreLines.add("<!i>" + line.getString());
+}
+dataMap.put("lore", loreLines);
+}
+}
+if (clientStack.contains(DataComponentTypes.CUSTOM_MODEL_DATA)) {
+Object cmdValue = clientStack.get(DataComponentTypes.CUSTOM_MODEL_DATA).value();
+if (cmdValue instanceof Integer intVal) {
+itemConfig.put("custom-model-data", intVal);
+} else if (cmdValue instanceof List<?> list && !list.isEmpty()) {
+Object first = list.get(0);
+if (first instanceof Number num) {
+itemConfig.put("custom-model-data", (int) num.floatValue());
+}
+}
+}
+if (!itemConfig.containsKey("model") && clientStack.contains(DataComponentTypes.ITEM_MODEL)) {
+Identifier itemModelId = clientStack.get(DataComponentTypes.ITEM_MODEL);
+if (itemModelId != null) {
+Map<String, Object> modelData = new LinkedHashMap<>();
+modelData.put("type", "minecraft:model");
+modelData.put("path", itemModelId.toString());
+itemConfig.put("model", modelData);
+}
+}
+if (clientStack.contains(DataComponentTypes.ENCHANTMENTS)) {
+ItemEnchantmentsComponent enchants = clientStack.get(DataComponentTypes.ENCHANTMENTS);
+if (enchants != null && !enchants.isEmpty()) {
+Map<String, Integer> enchConfig = new LinkedHashMap<>();
+enchants.getEnchantmentEntries().forEach(entry -> {
+String enchId = entry.getKey().getIdAsString();
+int level = entry.getIntValue();
+enchConfig.put(enchId, level);
+});
+dataMap.put("enchantments", enchConfig);
+}
+}
+if (clientStack.contains(DataComponentTypes.ATTRIBUTE_MODIFIERS)) {
+AttributeModifiersComponent attrs = clientStack.get(DataComponentTypes.ATTRIBUTE_MODIFIERS);
+if (attrs != null && !attrs.modifiers().isEmpty()) {
+List<Map<String, Object>> attrList = new ArrayList<>();
+attrs.modifiers().forEach(entry -> {
+Map<String, Object> attrMap = new LinkedHashMap<>();
+attrMap.put("type", entry.attribute().getIdAsString());
+attrMap.put("slot", entry.slot().asString());
+attrMap.put("amount", entry.modifier().value());
+attrMap.put("operation", entry.modifier().operation().asString());
+attrMap.put("id", entry.modifier().id().toString());
+attrList.add(attrMap);
+});
+Map<String, Object> attrComp = new LinkedHashMap<>();
+attrComp.put("modifiers", attrList);
+components.put("minecraft:attribute_modifiers", attrComp);
+}
+}
+if (clientStack.contains(DataComponentTypes.DYED_COLOR)) {
+DyedColorComponent dyedColor = clientStack.get(DataComponentTypes.DYED_COLOR);
+if (dyedColor != null) {
+int rgb = dyedColor.rgb();
+String hex = String.format("#%06X", (0xFFFFFF & rgb));
+dataMap.put("dyed-color", hex);
+}
+}
+if (clientStack.contains(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE)) {
+Boolean glint = clientStack.get(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE);
+if (glint != null) {
+dataMap.put("enchantment-glint-override", glint);
+}
+}
+if (clientStack.contains(DataComponentTypes.UNBREAKABLE)) {
+dataMap.put("unbreakable", true);
+}
+if (clientStack.contains(DataComponentTypes.MAX_DAMAGE)) {
+dataMap.put("max-damage", clientStack.get(DataComponentTypes.MAX_DAMAGE));
+}
+if (clientStack.contains(DataComponentTypes.DAMAGE)) {
+dataMap.put("damage", clientStack.get(DataComponentTypes.DAMAGE));
+}
+if (clientStack.contains(DataComponentTypes.REPAIR_COST)) {
+dataMap.put("repair-cost", clientStack.get(DataComponentTypes.REPAIR_COST));
+}
+if (clientStack.contains(DataComponentTypes.FOOD)) {
+FoodComponent food = clientStack.get(DataComponentTypes.FOOD);
+if (food != null) {
+Map<String, Object> foodMap = new LinkedHashMap<>();
+foodMap.put("nutrition", food.nutrition());
+foodMap.put("saturation", food.saturation());
+foodMap.put("can_always_eat", food.canAlwaysEat());
+components.put("minecraft:food", foodMap);
+}
+}
+if (clientStack.contains(DataComponentTypes.RARITY)) {
+Rarity rarity = clientStack.get(DataComponentTypes.RARITY);
+if (rarity != null) {
+dataMap.put("rarity", rarity.name().toLowerCase());
+}
+}
+if (clientStack.contains(DataComponentTypes.TOOLTIP_STYLE)) {
+Identifier style = clientStack.get(DataComponentTypes.TOOLTIP_STYLE);
+if (style != null) {
+dataMap.put("tooltip-style", style.toString());
+}
+}
+if (clientStack.contains(DataComponentTypes.TRIM)) {
+ArmorTrim trim = clientStack.get(DataComponentTypes.TRIM);
+if (trim != null) {
+Map<String, Object> trimMap = new LinkedHashMap<>();
+trimMap.put("material", trim.material().value().getIdAsString());
+trimMap.put("pattern", trim.pattern().value().getIdAsString());
+components.put("minecraft:trim", trimMap);
+}
+}
+if (clientStack.contains(DataComponentTypes.EQUIPPABLE)) {
+EquippableComponent equippable = clientStack.get(DataComponentTypes.EQUIPPABLE);
+if (equippable != null) {
+Map<String, Object> eqMap = new LinkedHashMap<>();
+eqMap.put("slot", equippable.slot().asString());
+if (equippable.model().isPresent()) {
+eqMap.put("model", equippable.model().get().toString());
+}
+components.put("minecraft:equippable", eqMap);
+}
+}
+if (!components.isEmpty()) {
+dataMap.put("components", components);
+}
+if (!dataMap.isEmpty()) {
+itemConfig.put("data", dataMap);
+}
+} catch (Exception e) {
+itemConfig.put("_error", "Conversion error: " + e.getMessage());
+itemConfig.put("_error_type", e.getClass().getSimpleName());
+itemConfig.put("material", "barrier");
+}
+return itemConfig;
+}
+}
+
+==================================================
+FILE: src\main\java\top\ellan\polymerconverter\EntityConverterLogic.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.common.impl.FakeWorld;
+import eu.pb4.polymer.common.impl.entity.InternalEntityHelpers;
+import eu.pb4.polymer.core.api.entity.PolymerEntity;
+import xyz.nucleoid.packettweaker.PacketContext;
+import eu.pb4.polymer.virtualentity.api.ElementHolder;
+import eu.pb4.polymer.virtualentity.api.elements.Element;
+import eu.pb4.polymer.virtualentity.api.elements.ItemDisplayElement;
+import eu.pb4.polymer.virtualentity.api.elements.TextDisplayElement;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.EntityType;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.data.DataTracker;
+import net.minecraft.item.ArmorItem;
+import net.minecraft.item.ItemStack;
+import net.minecraft.registry.Registries;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.text.Text;
+import net.minecraft.util.Pair;
+import net.minecraft.world.GameMode;
+import com.mojang.authlib.GameProfile;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.lang.reflect.Field;
+import java.util.*;
+public class EntityConverterLogic {
+private static final Logger LOGGER = LoggerFactory.getLogger("PolymerEntityConverter");
+public static Map<String, Object> convert(EntityType<?> entityType) {
+Map<String, Object> furnitureConfig = new LinkedHashMap<>();
+try {
+Entity entity = InternalEntityHelpers.getEntity(entityType);
+if (entity == null) {
+furnitureConfig.put("_error", "Failed to create template entity");
+return furnitureConfig;
+}
+ServerPlayerEntity fakePlayer = createSafeFakePlayer();
+if (fakePlayer == null) {
+furnitureConfig.put("_error", "Failed to create fake player context");
+return furnitureConfig;
+}
+PacketContext ctx = PacketContext.create(fakePlayer);
+List<Map<String, Object>> elements = new ArrayList<>();
+List<Map<String, Object>> hitboxes = new ArrayList<>();
+if (entity instanceof PolymerEntity polymerEntity) {
+LOGGER.info("Converting Polymer entity: {}", Registries.ENTITY_TYPE.getId(entityType));
+List<Pair<EquipmentSlot, ItemStack>> allEquipment = getAllEquipment(entity);
+List<Pair<EquipmentSlot, ItemStack>> visibleEquipment =
+polymerEntity.getPolymerVisibleEquipment(allEquipment, fakePlayer);
+for (Pair<EquipmentSlot, ItemStack> pair : visibleEquipment) {
+if (!pair.getRight().isEmpty()) {
+elements.add(createElementFromEquipment(pair.getRight(), pair.getLeft()));
+}
+}
+EntityType<?> visualType = polymerEntity.getPolymerEntityType(ctx);
+if (isDisplayEntity(visualType)) {
+Map<String, Object> displayElement = new LinkedHashMap<>();
+displayElement.put("position", "0,0,0");
+if (visualType == EntityType.TEXT_DISPLAY) {
+displayElement.put("billboard", "center");
+} else {
+displayElement.put("billboard", "fixed");
+}
+List<DataTracker.SerializedEntry<?>> trackedData = new ArrayList<>();
+try {
+polymerEntity.modifyRawTrackedData(trackedData, fakePlayer, true);
+LOGGER.debug("Extracted {} tracked data entries", trackedData.size());
+} catch (Exception ignored) {}
+applyTrackedDataToElement(displayElement, trackedData, visualType);
+if (visualType == EntityType.ITEM_DISPLAY && !displayElement.containsKey("item")) {
+displayElement.put("item", "minecraft:barrier");
+} else if (visualType == EntityType.TEXT_DISPLAY && !displayElement.containsKey("text")) {
+displayElement.put("text", "Text Display");
+}
+elements.add(displayElement);
+}
+extractElementHolderComponents(entity, elements);
+hitboxes.add(createMainHitbox(entity));
+}
+if (elements.isEmpty()) {
+Map<String, Object> fallback = new LinkedHashMap<>();
+fallback.put("item", "minecraft:barrier");
+fallback.put("position", "0,0,0");
+fallback.put("billboard", "fixed");
+fallback.put("scale", "0.5,0.5,0.5");
+elements.add(fallback);
+}
+Map<String, Object> variants = new LinkedHashMap<>();
+Map<String, Object> defaultVariant = new LinkedHashMap<>();
+defaultVariant.put("elements", elements);
+defaultVariant.put("hitboxes", hitboxes);
+variants.put("default", defaultVariant);
+furnitureConfig.put("variants", variants);
+Map<String, Object> settings = new LinkedHashMap<>();
+settings.put("placement", "ground");
+settings.put("hit-times", 3);
+furnitureConfig.put("settings", settings);
+} catch (Exception e) {
+LOGGER.error("Entity conversion failed", e);
+furnitureConfig.put("_error", "Conversion error: " + e.getMessage());
+}
+return furnitureConfig;
+}
+private static void applyTrackedDataToElement(Map<String, Object> element, List<DataTracker.SerializedEntry<?>> entries, EntityType<?> type) {
+for (DataTracker.SerializedEntry<?> entry : entries) {
+Object value = entry.value();
+if (value instanceof Vector3f vec) {
+if (Math.abs(vec.x - vec.y) < 0.001 && Math.abs(vec.y - vec.z) < 0.001 && Math.abs(vec.x) > 0.01) {
+element.put("scale", String.format("%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
+} else {
+element.put("translation", String.format("%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
+}
+} else if (value instanceof Quaternionf quat) {
+element.put("rotation", String.format("%.3f,%.3f,%.3f,%.3f", quat.x, quat.y, quat.z, quat.w));
+} else if (value instanceof ItemStack stack && type == EntityType.ITEM_DISPLAY) {
+element.put("item", Registries.ITEM.getId(stack.getItem()).toString());
+} else if (value instanceof Text text && type == EntityType.TEXT_DISPLAY) {
+element.put("text", text.getString());
+}
+}
+}
+private static void extractElementHolderComponents(Entity entity, List<Map<String, Object>> elements) {
+try {
+for (Field field : entity.getClass().getDeclaredFields()) {
+if (ElementHolder.class.isAssignableFrom(field.getType())) {
+field.setAccessible(true);
+ElementHolder holder = (ElementHolder) field.get(entity);
+if (holder != null) {
+for (Element virtualElement : holder.getElements()) {
+Map<String, Object> config = convertVirtualElement(virtualElement);
+if (config != null) {
+elements.add(config);
+}
+}
+}
+}
+}
+} catch (Throwable ignored) {}
+}
+private static Map<String, Object> convertVirtualElement(Element element) {
+Map<String, Object> map = new LinkedHashMap<>();
+map.put("position", "0,0,0");
+map.put("billboard", "fixed");
+Vector3f offset = element.getOffset().toVector3f();
+if (offset.length() > 0.001) {
+map.put("translation", String.format("%.3f,%.3f,%.3f", offset.x, offset.y, offset.z));
+}
+if (element instanceof ItemDisplayElement itemEl) {
+ItemStack stack = itemEl.getItem();
+map.put("item", Registries.ITEM.getId(stack.getItem()).toString());
+Vector3f scale = itemEl.getScale();
+if (scale != null) map.put("scale", String.format("%.3f,%.3f,%.3f", scale.x, scale.y, scale.z));
+Quaternionf rot = itemEl.getRightRotation();
+if (rot != null) map.put("rotation", String.format("%.3f,%.3f,%.3f,%.3f", rot.x, rot.y, rot.z, rot.w));
+return map;
+} else if (element instanceof TextDisplayElement textEl) {
+map.put("text", textEl.getText().getString());
+map.put("billboard", "center");
+return map;
+}
+return null;
+}
+private static ServerPlayerEntity createSafeFakePlayer() {
+try {
+return new ServerPlayerEntity(
+(MinecraftServer) null,
+FakeWorld.INSTANCE_UNSAFE,
+new GameProfile(UUID.randomUUID(), "PolymerConverter"),
+null
+) {
+@Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
+};
+} catch (Exception e) {
+return null;
+}
+}
+private static List<Pair<EquipmentSlot, ItemStack>> getAllEquipment(Entity entity) {
+List<Pair<EquipmentSlot, ItemStack>> list = new ArrayList<>();
+if (entity instanceof LivingEntity living) {
+for (EquipmentSlot slot : EquipmentSlot.values()) {
+list.add(new Pair<>(slot, living.getEquippedStack(slot)));
+}
+}
+return list;
+}
+private static Map<String, Object> createElementFromEquipment(ItemStack stack, EquipmentSlot slot) {
+Map<String, Object> element = new LinkedHashMap<>();
+element.put("item", Registries.ITEM.getId(stack.getItem()).toString());
+element.put("display-transform", getDisplayContextForSlot(slot));
+element.put("position", "0,0,0");
+element.put("billboard", "fixed");
+applySlotTransform(element, slot);
+return element;
+}
+private static String getDisplayContextForSlot(EquipmentSlot slot) {
+return switch (slot) {
+case HEAD -> "head";
+case MAINHAND -> "third_person_right_hand";
+case OFFHAND -> "third_person_left_hand";
+default -> "none";
+};
+}
+private static void applySlotTransform(Map<String, Object> element, EquipmentSlot slot) {
+switch (slot) {
+case HEAD:
+element.put("translation", "0.0,1.5,0.0");
+break;
+case MAINHAND:
+element.put("translation", "0.4,0.8,0.0");
+element.put("rotation", "0.0,0.0,-0.383,0.924");
+break;
+case OFFHAND:
+element.put("translation", "-0.4,0.8,0.0");
+element.put("rotation", "0.0,0.0,0.383,0.924");
+break;
+}
+}
+private static Map<String, Object> createMainHitbox(Entity entity) {
+Map<String, Object> box = new LinkedHashMap<>();
+box.put("type", "interaction");
+box.put("width", entity.getWidth());
+box.put("height", entity.getHeight());
+box.put("position", "0,0,0");
+box.put("invisible", true);
+if (entity instanceof LivingEntity) {
+box.put("interactive", true);
+box.put("can-be-hit-by-projectile", true);
+} else {
+box.put("blocks-building", true);
+}
+return box;
+}
+private static boolean isDisplayEntity(EntityType<?> type) {
+return type == EntityType.ITEM_DISPLAY ||
+type == EntityType.BLOCK_DISPLAY ||
+type == EntityType.TEXT_DISPLAY;
+}
+}
+
+==================================================
+FILE: src\main\java\top\ellan\polymerconverter\LanguageConverterLogic.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.core.api.block.PolymerBlock;
+import eu.pb4.polymer.core.api.item.PolymerItem;
+import eu.pb4.polymer.core.api.item.PolymerItemUtils;
+import xyz.nucleoid.packettweaker.PacketContext;
+import net.minecraft.block.Block;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.tooltip.TooltipType;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.Identifier;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.TreeMap;
+public class LanguageConverterLogic {
+public static Map<String, Object> convert() {
+Map<String, Object> rootConfig = new LinkedHashMap<>();
+Map<String, String> itemLangEn = new TreeMap<>();
+Map<String, String> blockLangEn = new TreeMap<>();
+PacketContext ctx = PacketContext.create();
+for (Identifier id : Registries.ITEM.getIds()) {
+if (id.getNamespace().equals("minecraft")) continue;
+Item item = Registries.ITEM.get(id);
+if (item instanceof PolymerItem) {
+String key = "item." + id.getNamespace() + "." + id.getPath();
+ItemStack clientStack = PolymerItemUtils.getPolymerItemStack(
+item.getDefaultStack(),
+TooltipType.BASIC,
+ctx
+);
+String name = clientStack.getName().getString();
+itemLangEn.put(key, "<!i>" + name);
+}
+}
+for (Identifier id : Registries.BLOCK.getIds()) {
+if (id.getNamespace().equals("minecraft")) continue;
+Block block = Registries.BLOCK.get(id);
+if (block instanceof PolymerBlock) {
+String key = "block_name:" + id.getNamespace() + ":" + id.getPath();
+String name = block.getName().getString();
+blockLangEn.put(key, "<!i>" + name);
+}
+}
+Map<String, Object> itemsSection = new LinkedHashMap<>();
+itemsSection.put("en_us", itemLangEn);
+itemsSection.put("zh_cn", new LinkedHashMap<>(itemLangEn));
+rootConfig.put("lang#items", itemsSection);
+Map<String, Object> blocksSection = new LinkedHashMap<>();
+blocksSection.put("en_us", blockLangEn);
+blocksSection.put("zh_cn", new LinkedHashMap<>(blockLangEn));
+rootConfig.put("lang#blocks", blocksSection);
+return rootConfig;
+}
+}
+
+==================================================
+FILE: src\main\java\top\ellan\polymerconverter\PolymerConverterMod.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.core.api.block.PolymerBlock;
+import eu.pb4.polymer.core.api.item.PolymerItem;
+import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.minecraft.block.Block;
+import net.minecraft.entity.EntityType;
+import net.minecraft.registry.Registries;
+import net.minecraft.server.command.CommandManager;
+import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.LinkedHashMap;
+import java.util.Map;
+public class PolymerConverterMod implements ModInitializer {
+public static final String MOD_ID = "polymer_converter";
+public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+@Override
+public void onInitialize() {
+LOGGER.info("PolymerConverter 初始化中...");
+CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+dispatcher.register(CommandManager.literal("poly2ce")
+.requires(source -> source.hasPermissionLevel(4))
+.executes(context -> {
+context.getSource().sendFeedback(() -> Text.literal("开始全量转换..."), false);
+int itemCount = runItemConversion();
+int blockCount = runBlockConversion();
+int entityCount = runEntityConversion();
+int soundCount = runSoundConversion();
+int langCount = runLangConversion();
+context.getSource().sendFeedback(() -> Text.literal(
+String.format("转换完成！\n物品: %d\n方块: %d\n实体: %d\n声音: %d\n语言条目: %d",
+itemCount, blockCount, entityCount, soundCount, langCount)
+), true);
+context.getSource().sendFeedback(() -> Text.literal("文件已保存至 config/craft-engine/ 目录"), false);
+return 1;
+}));
+});
+}
+private int runItemConversion() {
+Map<String, Object> rootConfig = new LinkedHashMap<>();
+Map<String, Object> itemsSection = new LinkedHashMap<>();
+int count = 0;
+for (Identifier id : Registries.ITEM.getIds()) {
+if (Registries.ITEM.get(id) instanceof PolymerItem polymerItem) {
+String key = id.getNamespace() + ":" + id.getPath();
+itemsSection.put(key, ConverterLogic.convert(polymerItem));
+count++;
+}
+}
+rootConfig.put("items", itemsSection);
+writeConfig("converted_items.yml", rootConfig);
+return count;
+}
+private int runBlockConversion() {
+Map<String, Object> rootConfig = new LinkedHashMap<>();
+Map<String, Object> blocksSection = new LinkedHashMap<>();
+int count = 0;
+for (Identifier id : Registries.BLOCK.getIds()) {
+Block block = Registries.BLOCK.get(id);
+if (block instanceof PolymerBlock polymerBlock) {
+String key = id.getNamespace() + ":" + id.getPath();
+blocksSection.put(key, BlockConverterLogic.convert(polymerBlock));
+count++;
+}
+}
+rootConfig.put("blocks", blocksSection);
+writeConfig("converted_blocks.yml", rootConfig);
+return count;
+}
+private int runEntityConversion() {
+Map<String, Object> rootConfig = new LinkedHashMap<>();
+Map<String, Object> furnitureSection = new LinkedHashMap<>();
+int count = 0;
+for (Identifier id : Registries.ENTITY_TYPE.getIds()) {
+if (id.getNamespace().equals("minecraft")) continue;
+EntityType<?> type = Registries.ENTITY_TYPE.get(id);
+Map<String, Object> config = EntityConverterLogic.convert(type);
+if (!config.isEmpty() && !config.containsKey("_note")) {
+String key = id.getNamespace() + ":" + id.getPath();
+furnitureSection.put(key, config);
+count++;
+}
+}
+rootConfig.put("furniture", furnitureSection);
+writeConfig("converted_furniture.yml", rootConfig);
+return count;
+}
+private int runSoundConversion() {
+Map<String, Object> config = SoundConverterLogic.convert();
+writeConfig("converted_sounds.yml", config);
+if (config.get("sounds") instanceof Map<?,?> map) {
+return map.size();
+}
+return 0;
+}
+private int runLangConversion() {
+Map<String, Object> config = LanguageConverterLogic.convert();
+writeConfig("converted_lang.yml", config);
+int count = 0;
+try {
+Map<?,?> items = (Map<?,?>) ((Map<?,?>) config.get("lang#items")).get("en_us");
+Map<?,?> blocks = (Map<?,?>) ((Map<?,?>) config.get("lang#blocks")).get("en_us");
+count = items.size() + blocks.size();
+} catch (Exception ignored) {}
+return count;
+}
+private void writeConfig(String fileName, Map<String, Object> data) {
+try {
+Path configDir = Paths.get("config", "craft-engine");
+if (!Files.exists(configDir)) {
+Files.createDirectories(configDir);
+}
+Path outputPath = configDir.resolve(fileName);
+Files.writeString(outputPath, SimpleYamlWriter.dump(data));
+LOGGER.info("已生成: " + fileName);
+} catch (IOException e) {
+LOGGER.error("写入失败: " + fileName, e);
+}
+}
+}
+
+==================================================
+FILE: src\main\java\top\ellan\polymerconverter\SimpleYamlWriter.java
+==================================================
+
+package top.ellan.polymerconverter;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+public class SimpleYamlWriter {
+private static final Pattern SPECIAL_CHARS = Pattern.compile("[#:\\[\\]{},\"'\\n]|$\\s|\\s^");
+public static String dump(Map<String, Object> data) {
+StringBuilder sb = new StringBuilder();
+dumpMap(sb, data, 0);
+return sb.toString();
+}
+@SuppressWarnings("unchecked")
+private static void dumpMap(StringBuilder sb, Map<String, Object> map, int indent) {
+String spaces = " ".repeat(indent);
+for (Map.Entry<String, Object> entry : map.entrySet()) {
+String key = entry.getKey();
+Object value = entry.getValue();
+if (value == null) continue;
+sb.append(spaces).append(key).append(":");
+if (value instanceof Map) {
+Map<String, Object> subMap = (Map<String, Object>) value;
+if (subMap.isEmpty()) {
+sb.append(" {}\n");
+} else {
+sb.append("\n");
+dumpMap(sb, subMap, indent + 2);
+}
+} else if (value instanceof List) {
+List<?> list = (List<?>) value;
+if (list.isEmpty()) {
+sb.append(" []\n");
+} else {
+sb.append("\n");
+dumpList(sb, list, indent);
+}
+} else {
+sb.append(" ").append(formatValue(value)).append("\n");
+}
+}
+}
+@SuppressWarnings("unchecked")
+private static void dumpList(StringBuilder sb, List<?> list, int indent) {
+String spaces = " ".repeat(indent);
+for (Object item : list) {
+sb.append(spaces).append("-");
+if (item instanceof Map) {
+sb.append("\n");
+dumpMap(sb, (Map<String, Object>) item, indent + 2);
+} else if (item instanceof List) {
+sb.append("\n");
+dumpList(sb, (List<?>) item, indent + 2);
+} else {
+sb.append(" ").append(formatValue(item)).append("\n");
+}
+}
+}
+private static String formatValue(Object value) {
+if (value == null) return "null";
+String str = value.toString();
+if (value instanceof Number || value instanceof Boolean) {
+return str;
+}
+boolean needsQuote = SPECIAL_CHARS.matcher(str).find()
+|| str.contains("<")
+|| str.contains(">")
+|| isNumeric(str)
+|| str.equalsIgnoreCase("true")
+|| str.equalsIgnoreCase("false")
+|| str.isEmpty();
+if (needsQuote) {
+return "\"" + str.replace("\"", "\\\"") + "\"";
+}
+return str;
+}
+private static boolean isNumeric(String str) {
+try {
+Double.parseDouble(str);
+return true;
+} catch (NumberFormatException e) {
+return false;
+}
+}
+}
+
+==================================================
+FILE: src\main\java\top\ellan\polymerconverter\SoundConverterLogic.java
+==================================================
+
+package top.ellan.polymerconverter;
+import eu.pb4.polymer.core.api.other.PolymerSoundEvent;
+import net.minecraft.registry.Registries;
+import net.minecraft.sound.SoundEvent;
+import net.minecraft.util.Identifier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.lang.reflect.Field;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.UUID;
+public class SoundConverterLogic {
+private static final Logger LOGGER = LoggerFactory.getLogger("PolymerSoundConverter");
+public static Map<String, Object> convert() {
+Map<String, Object> rootConfig = new LinkedHashMap<>();
+Map<String, Object> sounds = new LinkedHashMap<>();
+int polymerCount = 0;
+int moddedCount = 0;
+for (Identifier id : Registries.SOUND_EVENT.getIds()) {
+if (id.getNamespace().equals("minecraft")) continue;
+SoundEvent event = Registries.SOUND_EVENT.get(id);
+Map<String, Object> entry = new LinkedHashMap<>();
+if (event instanceof PolymerSoundEvent polymerSound) {
+polymerCount++;
+entry.put("type", "polymer");
+try {
+Field fallbackField = PolymerSoundEvent.class.getDeclaredField("polymerSound");
+fallbackField.setAccessible(true);
+SoundEvent fallback = (SoundEvent) fallbackField.get(polymerSound);
+if (fallback != null) {
+entry.put("fallback", fallback.getId().toString());
+} else {
+entry.put("fallback", "none");
+}
+try {
+Field sourceField = PolymerSoundEvent.class.getDeclaredField("source");
+sourceField.setAccessible(true);
+UUID source = (UUID) sourceField.get(polymerSound);
+if (source != null) {
+entry.put("resource_pack_uuid", source.toString());
+}
+} catch (NoSuchFieldException ignored) {
+}
+} catch (NoSuchFieldException e) {
+entry.put("_error", "field_not_found: polymerSound");
+} catch (IllegalAccessException e) {
+entry.put("_error", "access_denied");
+} catch (Exception e) {
+entry.put("_error", "unknown: " + e.getMessage());
+}
+}
+else {
+moddedCount++;
+entry.put("type", "modded");
+}
+sounds.put(id.toString(), entry);
+}
+LOGGER.info("Sound conversion finished. Polymer: {}, Modded: {}", polymerCount, moddedCount);
+rootConfig.put("sounds", sounds);
+return rootConfig;
+}
+}

@@ -3,26 +3,31 @@ package top.ellan.polymerconverter;
 import eu.pb4.polymer.common.impl.FakeWorld;
 import eu.pb4.polymer.common.impl.entity.InternalEntityHelpers;
 import eu.pb4.polymer.core.api.entity.PolymerEntity;
-import eu.pb4.polymer.core.api.other.PacketContext;
-// 如果环境没有 polymer-virtual-entity，请注释掉下方 import
+import xyz.nucleoid.packettweaker.PacketContext;
 import eu.pb4.polymer.virtualentity.api.ElementHolder;
-import eu.pb4.polymer.virtualentity.api.elements.Element;
-import eu.pb4.polymer.virtualentity.api.elements.ItemDisplayElement;
-import eu.pb4.polymer.virtualentity.api.elements.TextDisplayElement;
+import eu.pb4.polymer.virtualentity.api.elements.*; // 导入所有元素类型
 
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.CustomModelDataComponent;
+import net.minecraft.component.type.DyedColorComponent;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.data.DataTracker;
-import net.minecraft.item.ArmorItem;
 import net.minecraft.item.ItemStack;
+import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
+import net.minecraft.network.packet.s2c.play.EntityAttributesS2CPacket; // Attribute 包
 import net.minecraft.registry.Registries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
-import net.minecraft.util.Pair;
+import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.GameMode;
+
+import com.mojang.datafixers.util.Pair;
 import com.mojang.authlib.GameProfile;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -59,57 +64,67 @@ public class EntityConverterLogic {
             if (entity instanceof PolymerEntity polymerEntity) {
                 LOGGER.info("Converting Polymer entity: {}", Registries.ENTITY_TYPE.getId(entityType));
 
-                // --- A. 提取装备 (Visible Equipment) ---
+                // 1. 处理装备栏 (Armor Stand 等)
                 List<Pair<EquipmentSlot, ItemStack>> allEquipment = getAllEquipment(entity);
                 List<Pair<EquipmentSlot, ItemStack>> visibleEquipment = 
                     polymerEntity.getPolymerVisibleEquipment(allEquipment, fakePlayer);
 
                 for (Pair<EquipmentSlot, ItemStack> pair : visibleEquipment) {
-                    if (!pair.getRight().isEmpty()) {
-                        elements.add(createElementFromEquipment(pair.getRight(), pair.getLeft()));
+                    if (!pair.getSecond().isEmpty()) {
+                        elements.add(createElementFromEquipment(pair.getSecond(), pair.getFirst()));
                     }
                 }
 
-                // --- B. 提取 Display Entity 数据 ---
+                // 2. 处理实体本身的视觉表现 (如 Display Entities)
                 EntityType<?> visualType = polymerEntity.getPolymerEntityType(ctx);
+                
+                // [Enhanced] 属性处理 (Attribute) - 提取 Scale 等
+                List<EntityAttributesS2CPacket.Entry> attributes = new ArrayList<>();
+                try {
+                    polymerEntity.modifyRawEntityAttributeData(attributes, fakePlayer, true);
+                } catch (Exception ignored) {}
+                
+                double entityScale = extractScaleFromAttributes(attributes);
+
                 if (isDisplayEntity(visualType)) {
                     Map<String, Object> displayElement = new LinkedHashMap<>();
-                    displayElement.put("position", "0,0,0"); // Base position
+                    displayElement.put("position", "0,0,0");
                     
-                    // 默认 Billboard
                     if (visualType == EntityType.TEXT_DISPLAY) {
-                        displayElement.put("billboard", "center"); // 文字通常面向玩家
+                        displayElement.put("billboard", "center");
                     } else {
                         displayElement.put("billboard", "fixed");
                     }
+                    
+                    // 应用 Scale 属性
+                    if (Math.abs(entityScale - 1.0) > 0.001) {
+                        displayElement.put("scale", String.format(Locale.ROOT, "%.3f,%.3f,%.3f", entityScale, entityScale, entityScale));
+                    }
 
-                    // 提取 Tracker 数据
                     List<DataTracker.SerializedEntry<?>> trackedData = new ArrayList<>();
                     try {
                         polymerEntity.modifyRawTrackedData(trackedData, fakePlayer, true);
-                        LOGGER.debug("Extracted {} tracked data entries", trackedData.size());
                     } catch (Exception ignored) {}
 
                     applyTrackedDataToElement(displayElement, trackedData, visualType);
                     
-                    // 验证必要字段
+                    // 默认值填充
                     if (visualType == EntityType.ITEM_DISPLAY && !displayElement.containsKey("item")) {
-                        displayElement.put("item", "minecraft:barrier"); 
+                        displayElement.put("item", "minecraft:barrier");
                     } else if (visualType == EntityType.TEXT_DISPLAY && !displayElement.containsKey("text")) {
                         displayElement.put("text", "Text Display");
                     }
-                    
                     elements.add(displayElement);
                 }
 
-                // --- C. 提取 ElementHolder ---
+                // 3. 处理 VirtualElement (ElementHolder API)
                 extractElementHolderComponents(entity, elements);
-
-                // --- D. 生成碰撞箱 ---
+                
+                // 4. 生成碰撞箱
                 hitboxes.add(createMainHitbox(entity));
             }
 
-            // --- 兜底处理 ---
+            // Fallback
             if (elements.isEmpty()) {
                 Map<String, Object> fallback = new LinkedHashMap<>();
                 fallback.put("item", "minecraft:barrier"); 
@@ -119,13 +134,10 @@ public class EntityConverterLogic {
                 elements.add(fallback);
             }
 
-            // --- 组装配置 ---
             Map<String, Object> variants = new LinkedHashMap<>();
             Map<String, Object> defaultVariant = new LinkedHashMap<>();
-            
             defaultVariant.put("elements", elements);
             defaultVariant.put("hitboxes", hitboxes);
-
             variants.put("default", defaultVariant);
             furnitureConfig.put("variants", variants);
 
@@ -142,25 +154,42 @@ public class EntityConverterLogic {
         return furnitureConfig;
     }
 
-    // ================= 核心逻辑方法 =================
+    // --- 核心转换逻辑 ---
+
+    private static double extractScaleFromAttributes(List<EntityAttributesS2CPacket.Entry> attributes) {
+            for (EntityAttributesS2CPacket.Entry entry : attributes) {
+                // 在 1.21 中，attribute() 返回 RegistryEntry<EntityAttribute>
+                // 注意：EntityAttributes.SCALE 在 1.21 中通常更名为 EntityAttributes.SCALE
+                if (entry.attribute().equals(EntityAttributes.SCALE)) {
+                    // 修复：1.21 Yarn 中使用 .base() 获取基础数值
+                    return entry.base(); 
+                }
+            }
+            return 1.0;
+        }
 
     private static void applyTrackedDataToElement(Map<String, Object> element, List<DataTracker.SerializedEntry<?>> entries, EntityType<?> type) {
         for (DataTracker.SerializedEntry<?> entry : entries) {
             Object value = entry.value();
-            // 简单的启发式类型判断
+            
+            // JOML Vector3f 处理
             if (value instanceof Vector3f vec) {
-                // 通常 Scale 默认为 1,1,1 (非零)，Translation 默认为 0,0,0
-                // 这是一个猜测，但大多数情况有效
                 if (Math.abs(vec.x - vec.y) < 0.001 && Math.abs(vec.y - vec.z) < 0.001 && Math.abs(vec.x) > 0.01) {
-                    element.put("scale", String.format("%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
+                    element.put("scale", String.format(Locale.ROOT, "%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
                 } else {
-                    element.put("translation", String.format("%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
+                    element.put("translation", String.format(Locale.ROOT, "%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
                 }
-            } else if (value instanceof Quaternionf quat) {
-                element.put("rotation", String.format("%.3f,%.3f,%.3f,%.3f", quat.x, quat.y, quat.z, quat.w));
-            } else if (value instanceof ItemStack stack && type == EntityType.ITEM_DISPLAY) {
-                element.put("item", Registries.ITEM.getId(stack.getItem()).toString());
-            } else if (value instanceof Text text && type == EntityType.TEXT_DISPLAY) {
+            } 
+            // JOML Quaternionf 处理
+            else if (value instanceof Quaternionf quat) {
+                element.put("rotation", String.format(Locale.ROOT, "%.3f,%.3f,%.3f,%.3f", quat.x, quat.y, quat.z, quat.w));
+            } 
+            // ItemStack 处理
+            else if (value instanceof ItemStack stack && type == EntityType.ITEM_DISPLAY) {
+                writeItemStackData(element, stack);
+            } 
+            // Text 处理
+            else if (value instanceof Text text && type == EntityType.TEXT_DISPLAY) {
                 element.put("text", text.getString());
             }
         }
@@ -173,7 +202,7 @@ public class EntityConverterLogic {
                     field.setAccessible(true);
                     ElementHolder holder = (ElementHolder) field.get(entity);
                     if (holder != null) {
-                        for (Element virtualElement : holder.getElements()) {
+                        for (VirtualElement virtualElement : holder.getElements()) {
                             Map<String, Object> config = convertVirtualElement(virtualElement);
                             if (config != null) {
                                 elements.add(config);
@@ -185,50 +214,82 @@ public class EntityConverterLogic {
         } catch (Throwable ignored) {}
     }
 
-    private static Map<String, Object> convertVirtualElement(Element element) {
+    private static Map<String, Object> convertVirtualElement(VirtualElement element) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("position", "0,0,0"); 
-        map.put("billboard", "fixed"); // 默认为固定
+        map.put("billboard", "fixed");
 
-        Vector3f offset = element.getOffset().toVector3f();
-        if (offset.length() > 0.001) {
-            map.put("translation", String.format("%.3f,%.3f,%.3f", offset.x, offset.y, offset.z));
+        Vec3d offsetVec = element.getOffset();
+        if (offsetVec.lengthSquared() > 0.000001) {
+            map.put("translation", String.format(Locale.ROOT, "%.3f,%.3f,%.3f", offsetVec.x, offsetVec.y, offsetVec.z));
         }
 
         if (element instanceof ItemDisplayElement itemEl) {
-            ItemStack stack = itemEl.getItem();
-            map.put("item", Registries.ITEM.getId(stack.getItem()).toString());
+            writeItemStackData(map, itemEl.getItem());
             
-            Vector3f scale = itemEl.getScale();
-            if (scale != null) map.put("scale", String.format("%.3f,%.3f,%.3f", scale.x, scale.y, scale.z));
+            Vector3f scale = new Vector3f(itemEl.getScale());
+            map.put("scale", String.format(Locale.ROOT, "%.3f,%.3f,%.3f", scale.x, scale.y, scale.z));
             
-            // ItemDisplayElement 的旋转通常存储在 rightRotation
-            Quaternionf rot = itemEl.getRightRotation();
-            if (rot != null) map.put("rotation", String.format("%.3f,%.3f,%.3f,%.3f", rot.x, rot.y, rot.z, rot.w));
+            Quaternionf rot = new Quaternionf(itemEl.getRightRotation());
+            map.put("rotation", String.format(Locale.ROOT, "%.3f,%.3f,%.3f,%.3f", rot.x, rot.y, rot.z, rot.w));
 
             return map;
         } else if (element instanceof TextDisplayElement textEl) {
             map.put("text", textEl.getText().getString());
-            map.put("billboard", "center"); // 覆盖为面向玩家
+            map.put("billboard", "center");
+            map.put("background_color", textEl.getBackground());
+            return map;
+        } else if (element instanceof BlockDisplayElement blockEl) {
+            // [Enhanced] Block Display 支持
+            map.put("block_state", Registries.BLOCK.getId(blockEl.getBlockState().getBlock()).toString());
+            return map;
+        } else if (element instanceof InteractionElement interactionEl) {
+            // [Enhanced] Interaction 支持 (转换为 Hitbox 或虚拟配置)
+            map.put("type", "interaction");
+            map.put("width", interactionEl.getWidth());
+            map.put("height", interactionEl.getHeight());
             return map;
         }
         
         return null;
     }
 
-    // ================= 辅助方法 =================
+    private static void writeItemStackData(Map<String, Object> map, ItemStack stack) {
+        map.put("item", Registries.ITEM.getId(stack.getItem()).toString());
+        
+        if (stack.contains(DataComponentTypes.CUSTOM_MODEL_DATA)) {
+            CustomModelDataComponent cmd = stack.get(DataComponentTypes.CUSTOM_MODEL_DATA);
+            if (cmd != null && !cmd.floats().isEmpty()) {
+                map.put("custom_model_data", (int) cmd.floats().get(0).floatValue());
+            }
+        }
+        
+        if (stack.contains(DataComponentTypes.DYED_COLOR)) {
+            DyedColorComponent dyed = stack.get(DataComponentTypes.DYED_COLOR);
+            if (dyed != null) {
+                map.put("dyed_color", String.format("#%06X", (0xFFFFFF & dyed.rgb())));
+            }
+        }
+    }
+
+    // --- 工具方法 ---
 
     private static ServerPlayerEntity createSafeFakePlayer() {
         try {
+            if (!(FakeWorld.INSTANCE_UNSAFE instanceof ServerWorld)) {
+                LOGGER.warn("FakeWorld is not a ServerWorld instance, entity conversion might fail.");
+                return null;
+            }
             return new ServerPlayerEntity(
                 (MinecraftServer) null,
-                FakeWorld.INSTANCE_UNSAFE,
+                (ServerWorld) FakeWorld.INSTANCE_UNSAFE,
                 new GameProfile(UUID.randomUUID(), "PolymerConverter"),
-                null
+                SyncedClientOptions.createDefault()
             ) {
                 @Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
             };
         } catch (Exception e) {
+            LOGGER.error("Failed to create fake player: ", e);
             return null;
         }
     }
@@ -246,10 +307,11 @@ public class EntityConverterLogic {
     private static Map<String, Object> createElementFromEquipment(ItemStack stack, EquipmentSlot slot) {
         Map<String, Object> element = new LinkedHashMap<>();
         
-        element.put("item", Registries.ITEM.getId(stack.getItem()).toString());
-        element.put("display-transform", getDisplayContextForSlot(slot)); // [FIX] Field Name
-        element.put("position", "0,0,0"); // [FIX] Required
-        element.put("billboard", "fixed"); // [FIX] Default
+        writeItemStackData(element, stack);
+        
+        element.put("display-transform", getDisplayContextForSlot(slot));
+        element.put("position", "0,0,0");
+        element.put("billboard", "fixed");
         
         applySlotTransform(element, slot);
 
@@ -261,7 +323,8 @@ public class EntityConverterLogic {
             case HEAD -> "head";
             case MAINHAND -> "third_person_right_hand";
             case OFFHAND -> "third_person_left_hand";
-            default -> "none";
+            case FEET, LEGS, CHEST, BODY -> "none";
+            default -> "none"; 
         };
     }
 
@@ -272,13 +335,13 @@ public class EntityConverterLogic {
                 break;
             case MAINHAND:
                 element.put("translation", "0.4,0.8,0.0");
-                // 绕 Z 轴 -45 度
                 element.put("rotation", "0.0,0.0,-0.383,0.924"); 
                 break;
             case OFFHAND:
                 element.put("translation", "-0.4,0.8,0.0");
-                // 绕 Z 轴 45 度
                 element.put("rotation", "0.0,0.0,0.383,0.924");
+                break;
+            default:
                 break;
         }
     }
@@ -295,7 +358,6 @@ public class EntityConverterLogic {
             box.put("interactive", true);
             box.put("can-be-hit-by-projectile", true);
         } else {
-            // [FIX] 非生物实体默认为阻挡
             box.put("blocks-building", true); 
         }
         
