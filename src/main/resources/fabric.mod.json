@@ -16,7 +16,7 @@
 	"environment": "*",
 	"entrypoints": {
 		"main": [
-			"top.ellan.Poly2ce"
+			"top.ellan.polymerconverter.PolymerConverterMod"
 		]
 	},
 	"depends": {
