@@ -8,14 +8,21 @@ pluginManagement {
 }
 
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    // 将 FAIL_ON_PROJECT_REPOS 改为 PREFER_SETTINGS
+    // 这允许插件（如 Loom）添加它们正常工作所需的本地临时仓库
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    
     repositories {
         mavenCentral()
-        maven { url = 'https://maven.fabricmc.net/' }
-        maven { url = 'https://maven.nucleoid.xyz' }
-        // 关键：显式加入 Mojang 官方库地址
-        maven { url = 'https://libraries.minecraft.net/' } 
+        maven { 
+            name = "Fabric"
+            url = "https://maven.fabricmc.net/" 
+        }
+        maven { 
+            name = "Nucleoid"
+            url = "https://maven.nucleoid.xyz/" 
+        }
+        // 显式加上 Mojang 官方库，确保 1.21.11 的资源能拉到
+        maven { url = "https://libraries.minecraft.net/" }
     }
 }
-
-rootProject.name = 'polymer-converter'
