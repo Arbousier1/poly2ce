@@ -1,10 +1,27 @@
 pluginManagement {
-	repositories {
-		maven {
-			name = 'Fabric'
-			url = 'https://maven.fabricmc.net/'
-		}
-		mavenCentral()
-		gradlePluginPortal()
-	}
+    repositories {
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
 }
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        mavenCentral()
+        maven { 
+            name = "Nucleoid"
+            url = "https://maven.nucleoid.xyz/" 
+        }
+        maven { 
+            name = "Fabric"
+            url = "https://maven.fabricmc.net/" 
+        }
+    }
+}
+
+rootProject.name = 'polymer-converter'
