@@ -3,64 +3,35 @@ plugins {
     id 'maven-publish'
 }
 
-// ====================================================
-// 【黑科技补丁】动态关闭 Loom GSON 格式化
-// 解决 1.21.11 庞大映射表导致的构建卡死
-// ====================================================
+// 黑科技补丁：防止 1.21.11 映射解析崩溃
 try {
     def loomClass = Class.forName("net.fabricmc.loom.LoomGradlePlugin")
     def gsonField = com.google.gson.Gson.class.getDeclaredField("prettyPrinting")
     gsonField.setAccessible(true)
     gsonField.setBoolean(loomClass.GSON, false)
-    println ">> [Success] 已禁用 Loom GSON PrettyPrinting，增强构建稳定性。"
-} catch (Throwable e) {
-    // 第一次配置时类可能未加载，忽略即可
-}
+} catch (Throwable e) { }
 
 version = project.mod_version
 group = project.maven_group
 
-base {
-    archivesName = project.archives_base_name
-}
+base { archivesName = project.archives_base_name }
 
 repositories {
     mavenCentral()
     maven { url 'https://maven.fabricmc.net/' }
-    maven { url 'https://maven.nucleoid.xyz/' } // Polymer 仓库
-    maven { url 'https://libraries.minecraft.net/' } // Mojang 仓库
-}
-
-loom {
-    splitEnvironmentSourceSets()
-    mods {
-        "polymer_converter" {
-            sourceSet sourceSets.main
-        }
-    }
-    enableTransitiveAccessWideners = false
+    maven { url 'https://maven.nucleoid.xyz/' } 
+    maven { url 'https://libraries.minecraft.net/' } // 必须有，否则找不到 1.21.11
 }
 
 dependencies {
-    // 核心游戏
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    
-    // 1.21.11 建议直接用官方映射，或者指定确定的 Yarn 版本
     mappings loom.officialMojangMappings()
 
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
     
-    // Polymer 依赖 (包含家具转换所需的虚拟实体库)
     modImplementation include("eu.pb4:polymer-core:${project.polymer_version}")
     modImplementation include("eu.pb4:polymer-virtual-entity:${project.polymer_version}")
-}
-
-processResources {
-    inputs.property "version", project.version
-    filesMatching("fabric.mod.json") {
-        expand "version": inputs.properties.version
-    }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -68,6 +39,11 @@ tasks.withType(JavaCompile).configureEach {
     it.options.release = 21
 }
 
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
 java {
     withSourcesJar()
     sourceCompatibility = JavaVersion.VERSION_21
