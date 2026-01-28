@@ -1028,16 +1028,19 @@ import eu.pb4.polymer.common.impl.FakeWorld;
 import eu.pb4.polymer.core.api.block.PolymerBlock;
 import eu.pb4.polymer.core.api.block.PolymerBlockUtils;
 import eu.pb4.polymer.core.api.block.PolymerHeadBlock;
-import eu.pb4.polymer.core.api.other.PacketContext;
+import xyz.nucleoid.packettweaker.PacketContext;
 import net.minecraft.block.*;
 import net.minecraft.registry.Registries;
 import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.state.StateManager;
 import net.minecraft.state.property.*;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import net.minecraft.world.GameMode;
+import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
 import com.mojang.authlib.GameProfile;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -1048,41 +1051,54 @@ Map<String, Object> settings = new LinkedHashMap<>();
 Block block = (Block) polymerBlock;
 BlockState defaultState = block.getDefaultState();
 ServerPlayerEntity fakePlayer = createSafeFakePlayer();
-PacketContext ctx = PacketContext.create(fakePlayer);
+PacketContext ctx = fakePlayer != null ? PacketContext.create(fakePlayer) : PacketContext.create();
 try {
 BlockState visualState = PolymerBlockUtils.getPolymerBlockState(defaultState, ctx);
 Block visualBlock = visualState.getBlock();
-String materialId = Registries.BLOCK.getId(visualBlock).toString();
-settings.put("material", materialId);
-settings.put("hardness", block.getHardness());
-settings.put("resistance", block.getBlastResistance());
-if (defaultState.getLuminance() > 0) {
-settings.put("luminance", defaultState.getLuminance());
-}
+extractBlockSettings(block, defaultState, visualBlock, settings);
 try {
-settings.put("map-color", defaultState.getMapColor(null, null).id);
+if (ctx.getPlayer() != null) {
+polymerBlock.onPolymerBlockSend(defaultState, BlockPos.ORIGIN.mutableCopy(), ctx.asNotNullWithPlayer());
+}
 } catch (Exception ignored) {}
-if (defaultState.isReplaceable()) settings.put("replaceable", true);
-settings.put("push-reaction", defaultState.getPistonBehavior().name().toLowerCase());
-Map<String, String> sounds = new LinkedHashMap<>();
-String blockIdPath = Registries.BLOCK.getId(visualBlock).getPath();
-sounds.put("break", "minecraft:block." + blockIdPath + ".break");
-sounds.put("place", "minecraft:block." + blockIdPath + ".place");
-sounds.put("hit", "minecraft:block." + blockIdPath + ".hit");
-sounds.put("step", "minecraft:block." + blockIdPath + ".step");
-settings.put("sounds", sounds);
-List<String> tags = inferToolTags(defaultState);
-if (!tags.isEmpty()) {
-settings.put("tags", tags);
+BlockState breakState = polymerBlock.getPolymerBreakEventBlockState(defaultState, ctx);
+if (breakState != null && !breakState.getBlock().equals(visualBlock)) {
+settings.put("break-state", Registries.BLOCK.getId(breakState.getBlock()).toString());
 }
-try {
-polymerBlock.onPolymerBlockSend(defaultState, BlockPos.ORIGIN.toMutable(), new PacketContext.NotNullWithPlayer(ctx) {
-@Override
-public ServerPlayerEntity getPlayer() {
-return fakePlayer;
+if (polymerBlock.forceLightUpdates(defaultState)) {
+settings.put("force-light-updates", true);
 }
-});
-} catch (Exception ignored) {
+if (block instanceof BlockEntityProvider) {
+Map<String, Object> blockEntityConfig = new LinkedHashMap<>();
+String type;
+String renderer;
+if (block instanceof ChestBlock) {
+type = "chest";
+renderer = "chest";
+} else if (block instanceof SignBlock) {
+type = "sign";
+renderer = "sign";
+} else if (block instanceof SpawnerBlock) {
+type = "spawner";
+renderer = "spawner";
+} else if (block instanceof ShulkerBoxBlock) {
+type = "shulker_box";
+renderer = "shulker_box";
+} else if (block instanceof BedBlock) {
+type = "bed";
+renderer = "bed";
+} else {
+type = "custom";
+renderer = "custom";
+}
+blockEntityConfig.put("type", type);
+blockEntityConfig.put("renderer", renderer);
+settings.put("block-entity", blockEntityConfig);
+}
+if (visualState.isOpaqueFullCube()) {
+Map<String, Object> cullingData = new LinkedHashMap<>();
+cullingData.put("occlude", true);
+settings.put("culling", cullingData);
 }
 StateManager<Block, BlockState> stateManager = block.getStateManager();
 Collection<Property<?>> properties = stateManager.getProperties();
@@ -1100,7 +1116,20 @@ String variantKey = getVariantKey(state, properties);
 BlockState subVisualState = PolymerBlockUtils.getBlockStateSafely(polymerBlock, state, ctx);
 String subVisualBlockId = Registries.BLOCK.getId(subVisualState.getBlock()).toString();
 Map<String, Object> appearance = new LinkedHashMap<>();
+if (shouldUseCustomModel(subVisualState.getBlock())) {
+Map<String, Object> modelConfig = new LinkedHashMap<>();
+modelConfig.put("template", "default:model/cube");
+Map<String, Object> args = new LinkedHashMap<>();
+String baseName = Registries.BLOCK.getId(subVisualState.getBlock()).getPath();
+args.put("model", "minecraft:block/" + baseName);
+Map<String, String> textures = new LinkedHashMap<>();
+textures.put("all", "minecraft:block/" + baseName);
+args.put("textures", textures);
+modelConfig.put("arguments", args);
+appearance.put("model", modelConfig);
+} else {
 appearance.put("auto-state", subVisualBlockId);
+}
 appearances.put(variantKey, appearance);
 Map<String, Object> variant = new LinkedHashMap<>();
 variant.put("appearance", variantKey);
@@ -1115,9 +1144,6 @@ try {
 String skinValue = headBlock.getPolymerSkinValue(defaultState, BlockPos.ORIGIN, ctx);
 if (skinValue != null && !skinValue.isEmpty()) {
 List<Map<String, Object>> clientData = new ArrayList<>();
-Map<String, Object> op = new LinkedHashMap<>();
-op.put("type", "SET");
-op.put("path", "SkullOwner");
 Map<String, Object> profile = new LinkedHashMap<>();
 Map<String, Object> props = new LinkedHashMap<>();
 List<Map<String, Object>> textures = new ArrayList<>();
@@ -1126,6 +1152,9 @@ tex.put("Value", skinValue);
 textures.add(tex);
 props.put("textures", textures);
 profile.put("properties", props);
+Map<String, Object> op = new LinkedHashMap<>();
+op.put("type", "SET");
+op.put("path", "SkullOwner");
 op.put("value", profile);
 clientData.add(op);
 settings.put("client-bound-data", clientData);
@@ -1136,6 +1165,38 @@ List<Map<String, Object>> behaviors = inferBehaviors(block, polymerBlock);
 if (!behaviors.isEmpty()) {
 blockConfig.put("behaviors", behaviors);
 }
+Map<String, Object> events = new LinkedHashMap<>();
+if (block instanceof ButtonBlock || block instanceof LeverBlock) {
+events.put("on-interact", Arrays.asList("handle_redstone_toggle"));
+} else if (block instanceof DoorBlock || block instanceof TrapdoorBlock || block instanceof FenceGateBlock) {
+events.put("on-interact", Arrays.asList("handle_door_toggle"));
+} else if (block instanceof ChestBlock || block instanceof BarrelBlock || block instanceof ShulkerBoxBlock) {
+events.put("on-interact", Arrays.asList("open_inventory"));
+} else if (block instanceof TntBlock) {
+events.put("on-interact", Arrays.asList("ignite_tnt"));
+}
+if (!events.isEmpty()) {
+blockConfig.put("events", events);
+}
+Map<String, Object> lootConfig = new LinkedHashMap<>();
+boolean isOre = defaultState.isIn(BlockTags.COAL_ORES) ||
+defaultState.isIn(BlockTags.IRON_ORES) ||
+defaultState.isIn(BlockTags.COPPER_ORES) ||
+defaultState.isIn(BlockTags.GOLD_ORES) ||
+defaultState.isIn(BlockTags.REDSTONE_ORES) ||
+defaultState.isIn(BlockTags.LAPIS_ORES) ||
+defaultState.isIn(BlockTags.DIAMOND_ORES) ||
+defaultState.isIn(BlockTags.EMERALD_ORES);
+if (isOre || block instanceof RedstoneOreBlock) {
+lootConfig.put("template", "default:loot_table/ore");
+Map<String, Object> args = new LinkedHashMap<>();
+args.put("ore_drop", Registries.ITEM.getId(block.asItem()).toString());
+args.put("ore_block", Registries.BLOCK.getId(block).toString());
+lootConfig.put("arguments", args);
+} else {
+lootConfig.put("template", "default:loot_table/self");
+}
+blockConfig.put("loot", lootConfig);
 if (settings.get("material") == null) {
 throw new IllegalStateException("Material detection failed");
 }
@@ -1144,24 +1205,81 @@ if (!stateSection.isEmpty()) {
 blockConfig.put("state", stateSection);
 }
 } catch (Exception e) {
+e.printStackTrace();
 blockConfig.put("_error", "Conversion failed: " + e.getMessage());
 settings.put("material", "barrier");
 blockConfig.put("settings", settings);
 }
 return blockConfig;
 }
-private static ServerPlayerEntity createSafeFakePlayer() {
+private static void extractBlockSettings(Block block, BlockState state, Block visualBlock, Map<String, Object> settings) {
+settings.put("material", Registries.BLOCK.getId(visualBlock).toString());
+settings.put("hardness", block.getHardness());
+settings.put("resistance", block.getBlastResistance());
+if (state.getLuminance() > 0) {
+settings.put("luminance", state.getLuminance());
+}
 try {
-return new ServerPlayerEntity(
-(MinecraftServer) null,
-FakeWorld.INSTANCE_UNSAFE,
-new GameProfile(UUID.randomUUID(), "PolymerBlockConverter"),
-null
-) {
-@Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
-};
-} catch (Exception e) {
-return null;
+settings.put("map-color", state.getMapColor(null, null).id);
+} catch (Exception ignored) {}
+settings.put("friction", block.getSlipperiness());
+settings.put("speed-factor", block.getVelocityMultiplier());
+settings.put("jump-factor", block.getJumpVelocityMultiplier());
+settings.put("is-randomly-ticking", state.hasRandomTicks());
+settings.put("support-shape", Registries.BLOCK.getId(visualBlock).toString());
+if (block instanceof NoteBlock) {
+Map<String, Object> customData = new LinkedHashMap<>();
+customData.put("note", 0);
+settings.put("custom-data", customData);
+}
+if (visualBlock == Blocks.TNT || state.isIn(BlockTags.WOOL) || state.isIn(BlockTags.LOGS) || state.isIn(BlockTags.PLANKS)) {
+settings.put("burnable", true);
+}
+settings.put("replaceable", state.isReplaceable());
+settings.put("push-reaction", state.getPistonBehavior().name().toLowerCase());
+settings.put("require-correct-tools", true);
+settings.put("respect-tool-component", false);
+settings.put("incorrect-tool-speed", 0.3f);
+try {
+settings.put("instrument", state.getInstrument().ordinal());
+} catch (Exception ignored) {
+settings.put("instrument", 0);
+}
+settings.put("fluid-state", state.getFluidState() != null && !state.getFluidState().isEmpty());
+settings.put("propagates-skylight-down", state.hasSidedTransparency());
+try {
+settings.put("is-redstone-conductor", state.isSolidBlock(FakeWorld.INSTANCE_UNSAFE, BlockPos.ORIGIN));
+settings.put("is-suffocating", state.shouldSuffocate(FakeWorld.INSTANCE_UNSAFE, BlockPos.ORIGIN));
+settings.put("is-view-blocking", state.isOpaqueFullCube());
+} catch (Exception ignored) {
+settings.put("is-redstone-conductor", true);
+settings.put("is-suffocating", true);
+settings.put("is-view-blocking", true);
+}
+Set<String> correctTools = new HashSet<>();
+if (state.isIn(BlockTags.PICKAXE_MINEABLE)) correctTools.add("minecraft:pickaxe");
+if (state.isIn(BlockTags.AXE_MINEABLE)) correctTools.add("minecraft:axe");
+if (state.isIn(BlockTags.SHOVEL_MINEABLE)) correctTools.add("minecraft:shovel");
+if (state.isIn(BlockTags.HOE_MINEABLE)) correctTools.add("minecraft:hoe");
+if (state.isIn(BlockTags.NEEDS_DIAMOND_TOOL)) correctTools.add("minecraft:diamond_tier");
+if (state.isIn(BlockTags.NEEDS_IRON_TOOL)) correctTools.add("minecraft:iron_tier");
+if (!correctTools.isEmpty()) {
+settings.put("correct-tools", correctTools);
+}
+Map<String, String> sounds = new LinkedHashMap<>();
+String blockIdPath = Registries.BLOCK.getId(visualBlock).getPath();
+sounds.put("break", "minecraft:block." + blockIdPath + ".break");
+sounds.put("place", "minecraft:block." + blockIdPath + ".place");
+sounds.put("hit", "minecraft:block." + blockIdPath + ".hit");
+sounds.put("step", "minecraft:block." + blockIdPath + ".step");
+sounds.put("fall", "minecraft:block." + blockIdPath + ".fall");
+sounds.put("ambient", "minecraft:block." + blockIdPath + ".ambient");
+sounds.put("land", "minecraft:block." + blockIdPath + ".land");
+sounds.put("destroy", "minecraft:block." + blockIdPath + ".break");
+settings.put("sounds", sounds);
+List<String> tags = inferToolTags(state);
+if (!tags.isEmpty()) {
+settings.put("tags", tags);
 }
 }
 private static Map<String, Object> createPropertyDefinition(Property<?> property, BlockState defaultState) {
@@ -1170,34 +1288,88 @@ String type = "string";
 String name = property.getName();
 if (property instanceof IntProperty) type = "int";
 else if (property instanceof BooleanProperty) type = "boolean";
-else if (property instanceof DirectionProperty) {
-if (name.equals("facing")) type = "horizontal_direction";
-else if (name.equals("axis")) type = "axis";
-else type = "direction";
-}
 else if (property instanceof EnumProperty) {
-if (name.equals("facing")) type = "4-direction";
-else if (name.equals("half")) type = "double_block_half";
+if (property.getType() == Direction.class) {
+if (name.equals("axis")) {
+type = "axis";
+} else {
+type = isFullDirection(property) ? "direction" : "horizontal_direction";
+}
+} else {
+if (name.equals("half")) type = "double_block_half";
 else if (name.equals("shape")) type = "stairs_shape";
 else if (name.equals("hinge")) type = "hinge";
+else if (name.equals("slab_type")) type = "slab_type";
 else type = "string";
+}
 }
 def.put("type", type);
 if (property instanceof IntProperty intProp) {
-def.put("range", intProp.getMin() + "~" + intProp.getMax());
+int min = intProp.getValues().stream().min(Integer::compareTo).orElse(0);
+int max = intProp.getValues().stream().max(Integer::compareTo).orElse(1);
+def.put("range", min + "~" + max);
 } else {
-String range = property.getValues().stream()
-.map(v -> v.toString().toLowerCase())
-.collect(Collectors.joining(","));
-def.put("range", range);
+def.put("range", getSafeRange(property));
 }
-def.put("default", defaultState.get(property).toString().toLowerCase());
+def.put("default", getSafeValue(defaultState, property));
 return def;
+}
+@SuppressWarnings("unchecked")
+private static <T extends Comparable<T>> String getSafeValue(BlockState state, Property<?> property) {
+try {
+Property<T> typedProperty = (Property<T>) property;
+if (!state.contains(typedProperty)) return "null";
+T value = state.get(typedProperty);
+return value != null ? value.toString().toLowerCase() : "null";
+} catch (Exception e) {
+return "null";
+}
+}
+@SuppressWarnings("unchecked")
+private static <T extends Comparable<T>> String getSafeRange(Property<?> property) {
+try {
+Property<T> typedProperty = (Property<T>) property;
+return typedProperty.getValues().stream()
+.map(v -> v == null ? "null" : v.toString().toLowerCase())
+.collect(Collectors.joining(","));
+} catch (Exception e) {
+return "";
+}
+}
+@SuppressWarnings("unchecked")
+private static boolean isFullDirection(Property<?> property) {
+try {
+Collection<Direction> values = (Collection<Direction>) property.getValues();
+return values.contains(Direction.UP) || values.contains(Direction.DOWN);
+} catch (ClassCastException e) {
+return false;
+}
 }
 private static String getVariantKey(BlockState state, Collection<Property<?>> properties) {
 return properties.stream()
-.map(prop -> prop.getName() + "=" + state.get(prop).toString().toLowerCase())
+.map(prop -> prop.getName() + "=" + getSafeValue(state, prop))
 .collect(Collectors.joining(","));
+}
+private static boolean shouldUseCustomModel(Block block) {
+return block instanceof ChestBlock ||
+block instanceof DecoratedPotBlock ||
+block instanceof ShulkerBoxBlock ||
+block instanceof BedBlock ||
+block instanceof SkullBlock;
+}
+private static ServerPlayerEntity createSafeFakePlayer() {
+try {
+return new ServerPlayerEntity(
+(MinecraftServer) null,
+(ServerWorld) FakeWorld.INSTANCE_UNSAFE,
+new GameProfile(UUID.randomUUID(), "PolymerBlockConverter"),
+SyncedClientOptions.createDefault()
+) {
+@Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
+};
+} catch (Exception e) {
+return null;
+}
 }
 private static List<String> inferToolTags(BlockState state) {
 List<String> tags = new ArrayList<>();
@@ -1205,6 +1377,9 @@ if (state.isIn(BlockTags.PICKAXE_MINEABLE)) tags.add("minecraft:mineable/pickaxe
 if (state.isIn(BlockTags.AXE_MINEABLE)) tags.add("minecraft:mineable/axe");
 if (state.isIn(BlockTags.SHOVEL_MINEABLE)) tags.add("minecraft:mineable/shovel");
 if (state.isIn(BlockTags.HOE_MINEABLE)) tags.add("minecraft:mineable/hoe");
+if (state.isIn(BlockTags.NEEDS_DIAMOND_TOOL)) tags.add("minecraft:needs_diamond_tool");
+if (state.isIn(BlockTags.NEEDS_IRON_TOOL)) tags.add("minecraft:needs_iron_tool");
+if (state.isIn(BlockTags.NEEDS_STONE_TOOL)) tags.add("minecraft:needs_stone_tool");
 return tags;
 }
 private static List<Map<String, Object>> inferBehaviors(Block block, PolymerBlock polymerBlock) {
@@ -1224,6 +1399,8 @@ if (block instanceof LeavesBlock) list.add(Map.of("type", "leaves_block"));
 if (block instanceof SignBlock) list.add(Map.of("type", "sign_block"));
 if (block instanceof ChestBlock) list.add(Map.of("type", "storage_block"));
 if (block instanceof RedstoneTorchBlock) list.add(Map.of("type", "redstone_torch_block"));
+if (block instanceof TntBlock) list.add(Map.of("type", "tnt_block"));
+if (block instanceof BedBlock) list.add(Map.of("type", "bed_block"));
 if (polymerBlock instanceof PolymerHeadBlock) {
 list.add(Map.of("type", "bush_block"));
 }
@@ -1236,6 +1413,7 @@ FILE: src\main\java\top\ellan\polymerconverter\ConverterLogic.java
 ==================================================
 
 package top.ellan.polymerconverter;
+import eu.pb4.polymer.common.impl.FakeWorld;
 import eu.pb4.polymer.core.api.item.PolymerItem;
 import eu.pb4.polymer.core.api.item.PolymerItemUtils;
 import xyz.nucleoid.packettweaker.PacketContext;
@@ -1244,17 +1422,32 @@ import net.minecraft.component.type.*;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.tooltip.TooltipType;
-import net.minecraft.item.equipment.ArmorTrim;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.RegistryWrapper;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ServerWorld;
+import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.Rarity;
+import net.minecraft.world.GameMode;
+import com.mojang.authlib.GameProfile;
+import net.minecraft.text.TextCodecs;
+import com.mojang.serialization.JsonOps;
+import com.google.gson.JsonElement;
 import java.util.*;
 public class ConverterLogic {
 public static Map<String, Object> convert(PolymerItem polymerItem) {
 Map<String, Object> itemConfig = new LinkedHashMap<>();
+if (!(polymerItem instanceof Item)) {
+itemConfig.put("_error", "PolymerItem is not an instance of Item");
+return itemConfig;
+}
 ItemStack serverStack = new ItemStack((Item) polymerItem);
-PacketContext ctx = PacketContext.create();
+ServerPlayerEntity fakePlayer = createSafeFakePlayer();
+PacketContext ctx = fakePlayer != null ? PacketContext.create(fakePlayer) : PacketContext.create();
+RegistryWrapper.WrapperLookup registryLookup = fakePlayer != null ? fakePlayer.getRegistryManager() : null;
 try {
 Item clientBaseItem = polymerItem.getPolymerItem(serverStack, ctx);
 itemConfig.put("material", Registries.ITEM.getId(clientBaseItem).toString());
@@ -1268,27 +1461,28 @@ itemConfig.put("model", modelData);
 ItemStack clientStack = PolymerItemUtils.getPolymerItemStack(serverStack, TooltipType.BASIC, ctx);
 Map<String, Object> dataMap = new LinkedHashMap<>();
 Map<String, Object> components = new LinkedHashMap<>();
-if (clientStack.hasCustomName()) {
-dataMap.put("item-name", "<!i>" + clientStack.getName().getString());
+if (clientStack.contains(DataComponentTypes.CUSTOM_NAME)) {
+Text nameText = clientStack.getName();
+dataMap.put("item-name", serializeText(nameText, registryLookup));
 }
 if (clientStack.contains(DataComponentTypes.LORE)) {
 LoreComponent lore = clientStack.get(DataComponentTypes.LORE);
 if (lore != null) {
 List<String> loreLines = new ArrayList<>();
 for (Text line : lore.lines()) {
-loreLines.add("<!i>" + line.getString());
+loreLines.add(serializeText(line, registryLookup));
 }
 dataMap.put("lore", loreLines);
 }
 }
 if (clientStack.contains(DataComponentTypes.CUSTOM_MODEL_DATA)) {
-Object cmdValue = clientStack.get(DataComponentTypes.CUSTOM_MODEL_DATA).value();
-if (cmdValue instanceof Integer intVal) {
-itemConfig.put("custom-model-data", intVal);
-} else if (cmdValue instanceof List<?> list && !list.isEmpty()) {
-Object first = list.get(0);
-if (first instanceof Number num) {
-itemConfig.put("custom-model-data", (int) num.floatValue());
+CustomModelDataComponent cmd = clientStack.get(DataComponentTypes.CUSTOM_MODEL_DATA);
+if (cmd != null) {
+if (!cmd.floats().isEmpty()) {
+itemConfig.put("custom-model-data", (int) cmd.floats().get(0).floatValue());
+}
+if (!cmd.strings().isEmpty()) {
+itemConfig.put("custom-model-data-strings", cmd.strings());
 }
 }
 }
@@ -1341,9 +1535,7 @@ dataMap.put("dyed-color", hex);
 }
 if (clientStack.contains(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE)) {
 Boolean glint = clientStack.get(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE);
-if (glint != null) {
-dataMap.put("enchantment-glint-override", glint);
-}
+if (glint != null) dataMap.put("enchantment-glint-override", glint);
 }
 if (clientStack.contains(DataComponentTypes.UNBREAKABLE)) {
 dataMap.put("unbreakable", true);
@@ -1367,6 +1559,37 @@ foodMap.put("can_always_eat", food.canAlwaysEat());
 components.put("minecraft:food", foodMap);
 }
 }
+if (clientStack.contains(DataComponentTypes.CONSUMABLE)) {
+ConsumableComponent consumable = clientStack.get(DataComponentTypes.CONSUMABLE);
+if (consumable != null) {
+Map<String, Object> consumeMap = new LinkedHashMap<>();
+consumeMap.put("consume_seconds", consumable.consumeSeconds());
+if (consumable.useAction() != null) {
+consumeMap.put("animation", consumable.useAction().name().toLowerCase());
+}
+components.put("minecraft:consumable", consumeMap);
+}
+}
+if (clientStack.contains(DataComponentTypes.USE_COOLDOWN)) {
+UseCooldownComponent cooldown = clientStack.get(DataComponentTypes.USE_COOLDOWN);
+if (cooldown != null) {
+Map<String, Object> cdMap = new LinkedHashMap<>();
+cdMap.put("seconds", cooldown.seconds());
+cooldown.cooldownGroup().ifPresent(group ->
+cdMap.put("group", group.toString())
+);
+components.put("minecraft:use_cooldown", cdMap);
+}
+}
+if (clientStack.contains(DataComponentTypes.TOOL)) {
+ToolComponent tool = clientStack.get(DataComponentTypes.TOOL);
+if (tool != null) {
+Map<String, Object> toolMap = new LinkedHashMap<>();
+toolMap.put("default_mining_speed", tool.defaultMiningSpeed());
+toolMap.put("damage_per_block", tool.damagePerBlock());
+components.put("minecraft:tool", toolMap);
+}
+}
 if (clientStack.contains(DataComponentTypes.RARITY)) {
 Rarity rarity = clientStack.get(DataComponentTypes.RARITY);
 if (rarity != null) {
@@ -1380,11 +1603,15 @@ dataMap.put("tooltip-style", style.toString());
 }
 }
 if (clientStack.contains(DataComponentTypes.TRIM)) {
-ArmorTrim trim = clientStack.get(DataComponentTypes.TRIM);
+var trim = clientStack.get(DataComponentTypes.TRIM);
 if (trim != null) {
 Map<String, Object> trimMap = new LinkedHashMap<>();
-trimMap.put("material", trim.material().value().getIdAsString());
-trimMap.put("pattern", trim.pattern().value().getIdAsString());
+trim.material().getKey().ifPresent(key ->
+trimMap.put("material", key.getValue().toString())
+);
+trim.pattern().getKey().ifPresent(key ->
+trimMap.put("pattern", key.getValue().toString())
+);
 components.put("minecraft:trim", trimMap);
 }
 }
@@ -1393,10 +1620,26 @@ EquippableComponent equippable = clientStack.get(DataComponentTypes.EQUIPPABLE);
 if (equippable != null) {
 Map<String, Object> eqMap = new LinkedHashMap<>();
 eqMap.put("slot", equippable.slot().asString());
-if (equippable.model().isPresent()) {
-eqMap.put("model", equippable.model().get().toString());
-}
+equippable.assetId().ifPresent(id ->
+eqMap.put("model", id.toString())
+);
 components.put("minecraft:equippable", eqMap);
+}
+}
+if (clientStack.contains(DataComponentTypes.JUKEBOX_PLAYABLE)) {
+JukeboxPlayableComponent jukebox = clientStack.get(DataComponentTypes.JUKEBOX_PLAYABLE);
+if (jukebox != null) {
+Map<String, Object> jbMap = new LinkedHashMap<>();
+jukebox.song().getKey().ifPresent(key ->
+jbMap.put("song", key.getValue().toString())
+);
+components.put("minecraft:jukebox_playable", jbMap);
+}
+}
+if (clientStack.contains(DataComponentTypes.FIREWORKS)) {
+FireworksComponent fireworks = clientStack.get(DataComponentTypes.FIREWORKS);
+if (fireworks != null) {
+dataMap.put("flight", fireworks.flightDuration());
 }
 }
 if (!components.isEmpty()) {
@@ -1412,6 +1655,32 @@ itemConfig.put("material", "barrier");
 }
 return itemConfig;
 }
+private static String serializeText(Text text, RegistryWrapper.WrapperLookup registries) {
+if (registries != null) {
+try {
+return TextCodecs.CODEC.encodeStart(registries.getOps(JsonOps.INSTANCE), text)
+.map(JsonElement::toString)
+.result()
+.orElseGet(() -> "<!i>" + text.getString());
+} catch (Exception e) {
+}
+}
+return "<!i>" + text.getString();
+}
+private static ServerPlayerEntity createSafeFakePlayer() {
+try {
+return new ServerPlayerEntity(
+(MinecraftServer) null,
+(ServerWorld) FakeWorld.INSTANCE_UNSAFE,
+new GameProfile(UUID.randomUUID(), "PolymerItemConverter"),
+SyncedClientOptions.createDefault()
+) {
+@Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
+};
+} catch (Exception e) {
+return null;
+}
+}
 }
 
 ==================================================
@@ -1424,22 +1693,27 @@ import eu.pb4.polymer.common.impl.entity.InternalEntityHelpers;
 import eu.pb4.polymer.core.api.entity.PolymerEntity;
 import xyz.nucleoid.packettweaker.PacketContext;
 import eu.pb4.polymer.virtualentity.api.ElementHolder;
-import eu.pb4.polymer.virtualentity.api.elements.Element;
-import eu.pb4.polymer.virtualentity.api.elements.ItemDisplayElement;
-import eu.pb4.polymer.virtualentity.api.elements.TextDisplayElement;
+import eu.pb4.polymer.virtualentity.api.elements.*;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.CustomModelDataComponent;
+import net.minecraft.component.type.DyedColorComponent;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.data.DataTracker;
-import net.minecraft.item.ArmorItem;
 import net.minecraft.item.ItemStack;
+import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
+import net.minecraft.network.packet.s2c.play.EntityAttributesS2CPacket;
 import net.minecraft.registry.Registries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
-import net.minecraft.util.Pair;
+import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.GameMode;
+import com.mojang.datafixers.util.Pair;
 import com.mojang.authlib.GameProfile;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -1471,11 +1745,16 @@ List<Pair<EquipmentSlot, ItemStack>> allEquipment = getAllEquipment(entity);
 List<Pair<EquipmentSlot, ItemStack>> visibleEquipment =
 polymerEntity.getPolymerVisibleEquipment(allEquipment, fakePlayer);
 for (Pair<EquipmentSlot, ItemStack> pair : visibleEquipment) {
-if (!pair.getRight().isEmpty()) {
-elements.add(createElementFromEquipment(pair.getRight(), pair.getLeft()));
+if (!pair.getSecond().isEmpty()) {
+elements.add(createElementFromEquipment(pair.getSecond(), pair.getFirst()));
 }
 }
 EntityType<?> visualType = polymerEntity.getPolymerEntityType(ctx);
+List<EntityAttributesS2CPacket.Entry> attributes = new ArrayList<>();
+try {
+polymerEntity.modifyRawEntityAttributeData(attributes, fakePlayer, true);
+} catch (Exception ignored) {}
+double entityScale = extractScaleFromAttributes(attributes);
 if (isDisplayEntity(visualType)) {
 Map<String, Object> displayElement = new LinkedHashMap<>();
 displayElement.put("position", "0,0,0");
@@ -1484,10 +1763,12 @@ displayElement.put("billboard", "center");
 } else {
 displayElement.put("billboard", "fixed");
 }
+if (Math.abs(entityScale - 1.0) > 0.001) {
+displayElement.put("scale", String.format(Locale.ROOT, "%.3f,%.3f,%.3f", entityScale, entityScale, entityScale));
+}
 List<DataTracker.SerializedEntry<?>> trackedData = new ArrayList<>();
 try {
 polymerEntity.modifyRawTrackedData(trackedData, fakePlayer, true);
-LOGGER.debug("Extracted {} tracked data entries", trackedData.size());
 } catch (Exception ignored) {}
 applyTrackedDataToElement(displayElement, trackedData, visualType);
 if (visualType == EntityType.ITEM_DISPLAY && !displayElement.containsKey("item")) {
@@ -1524,20 +1805,31 @@ furnitureConfig.put("_error", "Conversion error: " + e.getMessage());
 }
 return furnitureConfig;
 }
+private static double extractScaleFromAttributes(List<EntityAttributesS2CPacket.Entry> attributes) {
+for (EntityAttributesS2CPacket.Entry entry : attributes) {
+if (entry.attribute().equals(EntityAttributes.SCALE)) {
+return entry.base();
+}
+}
+return 1.0;
+}
 private static void applyTrackedDataToElement(Map<String, Object> element, List<DataTracker.SerializedEntry<?>> entries, EntityType<?> type) {
 for (DataTracker.SerializedEntry<?> entry : entries) {
 Object value = entry.value();
 if (value instanceof Vector3f vec) {
 if (Math.abs(vec.x - vec.y) < 0.001 && Math.abs(vec.y - vec.z) < 0.001 && Math.abs(vec.x) > 0.01) {
-element.put("scale", String.format("%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
+element.put("scale", String.format(Locale.ROOT, "%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
 } else {
-element.put("translation", String.format("%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
+element.put("translation", String.format(Locale.ROOT, "%.3f,%.3f,%.3f", vec.x, vec.y, vec.z));
 }
-} else if (value instanceof Quaternionf quat) {
-element.put("rotation", String.format("%.3f,%.3f,%.3f,%.3f", quat.x, quat.y, quat.z, quat.w));
-} else if (value instanceof ItemStack stack && type == EntityType.ITEM_DISPLAY) {
-element.put("item", Registries.ITEM.getId(stack.getItem()).toString());
-} else if (value instanceof Text text && type == EntityType.TEXT_DISPLAY) {
+}
+else if (value instanceof Quaternionf quat) {
+element.put("rotation", String.format(Locale.ROOT, "%.3f,%.3f,%.3f,%.3f", quat.x, quat.y, quat.z, quat.w));
+}
+else if (value instanceof ItemStack stack && type == EntityType.ITEM_DISPLAY) {
+writeItemStackData(element, stack);
+}
+else if (value instanceof Text text && type == EntityType.TEXT_DISPLAY) {
 element.put("text", text.getString());
 }
 }
@@ -1549,7 +1841,7 @@ if (ElementHolder.class.isAssignableFrom(field.getType())) {
 field.setAccessible(true);
 ElementHolder holder = (ElementHolder) field.get(entity);
 if (holder != null) {
-for (Element virtualElement : holder.getElements()) {
+for (VirtualElement virtualElement : holder.getElements()) {
 Map<String, Object> config = convertVirtualElement(virtualElement);
 if (config != null) {
 elements.add(config);
@@ -1560,40 +1852,68 @@ elements.add(config);
 }
 } catch (Throwable ignored) {}
 }
-private static Map<String, Object> convertVirtualElement(Element element) {
+private static Map<String, Object> convertVirtualElement(VirtualElement element) {
 Map<String, Object> map = new LinkedHashMap<>();
 map.put("position", "0,0,0");
 map.put("billboard", "fixed");
-Vector3f offset = element.getOffset().toVector3f();
-if (offset.length() > 0.001) {
-map.put("translation", String.format("%.3f,%.3f,%.3f", offset.x, offset.y, offset.z));
+Vec3d offsetVec = element.getOffset();
+if (offsetVec.lengthSquared() > 0.000001) {
+map.put("translation", String.format(Locale.ROOT, "%.3f,%.3f,%.3f", offsetVec.x, offsetVec.y, offsetVec.z));
 }
 if (element instanceof ItemDisplayElement itemEl) {
-ItemStack stack = itemEl.getItem();
-map.put("item", Registries.ITEM.getId(stack.getItem()).toString());
-Vector3f scale = itemEl.getScale();
-if (scale != null) map.put("scale", String.format("%.3f,%.3f,%.3f", scale.x, scale.y, scale.z));
-Quaternionf rot = itemEl.getRightRotation();
-if (rot != null) map.put("rotation", String.format("%.3f,%.3f,%.3f,%.3f", rot.x, rot.y, rot.z, rot.w));
+writeItemStackData(map, itemEl.getItem());
+Vector3f scale = new Vector3f(itemEl.getScale());
+map.put("scale", String.format(Locale.ROOT, "%.3f,%.3f,%.3f", scale.x, scale.y, scale.z));
+Quaternionf rot = new Quaternionf(itemEl.getRightRotation());
+map.put("rotation", String.format(Locale.ROOT, "%.3f,%.3f,%.3f,%.3f", rot.x, rot.y, rot.z, rot.w));
 return map;
 } else if (element instanceof TextDisplayElement textEl) {
 map.put("text", textEl.getText().getString());
 map.put("billboard", "center");
+map.put("background_color", textEl.getBackground());
+return map;
+} else if (element instanceof BlockDisplayElement blockEl) {
+map.put("block_state", Registries.BLOCK.getId(blockEl.getBlockState().getBlock()).toString());
+return map;
+} else if (element instanceof InteractionElement interactionEl) {
+map.put("type", "interaction");
+map.put("width", interactionEl.getWidth());
+map.put("height", interactionEl.getHeight());
 return map;
 }
 return null;
 }
+private static void writeItemStackData(Map<String, Object> map, ItemStack stack) {
+map.put("item", Registries.ITEM.getId(stack.getItem()).toString());
+if (stack.contains(DataComponentTypes.CUSTOM_MODEL_DATA)) {
+CustomModelDataComponent cmd = stack.get(DataComponentTypes.CUSTOM_MODEL_DATA);
+if (cmd != null && !cmd.floats().isEmpty()) {
+map.put("custom_model_data", (int) cmd.floats().get(0).floatValue());
+}
+}
+if (stack.contains(DataComponentTypes.DYED_COLOR)) {
+DyedColorComponent dyed = stack.get(DataComponentTypes.DYED_COLOR);
+if (dyed != null) {
+map.put("dyed_color", String.format("#%06X", (0xFFFFFF & dyed.rgb())));
+}
+}
+}
 private static ServerPlayerEntity createSafeFakePlayer() {
 try {
+if (!(FakeWorld.INSTANCE_UNSAFE instanceof ServerWorld)) {
+LOGGER.warn("FakeWorld is not a ServerWorld instance, entity conversion might fail.");
+return null;
+}
 return new ServerPlayerEntity(
 (MinecraftServer) null,
-FakeWorld.INSTANCE_UNSAFE,
+(ServerWorld) FakeWorld.INSTANCE_UNSAFE,
 new GameProfile(UUID.randomUUID(), "PolymerConverter"),
-null
+SyncedClientOptions.createDefault()
 ) {
 @Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
 };
 } catch (Exception e) {
+LOGGER.error("Failed to create fake player: ", e);
 return null;
 }
 }
@@ -1608,7 +1928,7 @@ return list;
 }
 private static Map<String, Object> createElementFromEquipment(ItemStack stack, EquipmentSlot slot) {
 Map<String, Object> element = new LinkedHashMap<>();
-element.put("item", Registries.ITEM.getId(stack.getItem()).toString());
+writeItemStackData(element, stack);
 element.put("display-transform", getDisplayContextForSlot(slot));
 element.put("position", "0,0,0");
 element.put("billboard", "fixed");
@@ -1620,6 +1940,7 @@ return switch (slot) {
 case HEAD -> "head";
 case MAINHAND -> "third_person_right_hand";
 case OFFHAND -> "third_person_left_hand";
+case FEET, LEGS, CHEST, BODY -> "none";
 default -> "none";
 };
 }
@@ -1635,6 +1956,8 @@ break;
 case OFFHAND:
 element.put("translation", "-0.4,0.8,0.0");
 element.put("rotation", "0.0,0.0,0.383,0.924");
+break;
+default:
 break;
 }
 }
@@ -1750,7 +2073,7 @@ public void onInitialize() {
 LOGGER.info("PolymerConverter 初始化中...");
 CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
 dispatcher.register(CommandManager.literal("poly2ce")
-.requires(source -> source.hasPermissionLevel(4))
+.requires(eu.pb4.polymer.common.impl.CommonImplUtils.permission("command.poly2ce", 4))
 .executes(context -> {
 context.getSource().sendFeedback(() -> Text.literal("开始全量转换..."), false);
 int itemCount = runItemConversion();
@@ -1829,10 +2152,22 @@ Map<String, Object> config = LanguageConverterLogic.convert();
 writeConfig("converted_lang.yml", config);
 int count = 0;
 try {
-Map<?,?> items = (Map<?,?>) ((Map<?,?>) config.get("lang#items")).get("en_us");
-Map<?,?> blocks = (Map<?,?>) ((Map<?,?>) config.get("lang#blocks")).get("en_us");
-count = items.size() + blocks.size();
-} catch (Exception ignored) {}
+Object itemsObj = config.get("lang#items");
+if (itemsObj instanceof Map<?,?> itemsMap) {
+Object enUsItems = itemsMap.get("en_us");
+if (enUsItems instanceof Map<?,?> items) {
+count += items.size();
+}
+}
+Object blocksObj = config.get("lang#blocks");
+if (blocksObj instanceof Map<?,?> blocksMap) {
+Object enUsBlocks = blocksMap.get("en_us");
+if (enUsBlocks instanceof Map<?,?> blocks) {
+count += blocks.size();
+}
+}
+} catch (Exception ignored) {
+}
 return count;
 }
 private void writeConfig(String fileName, Map<String, Object> data) {
@@ -1944,6 +2279,7 @@ FILE: src\main\java\top\ellan\polymerconverter\SoundConverterLogic.java
 
 package top.ellan.polymerconverter;
 import eu.pb4.polymer.core.api.other.PolymerSoundEvent;
+import eu.pb4.polymer.core.api.utils.PolymerSyncedObject;
 import net.minecraft.registry.Registries;
 import net.minecraft.sound.SoundEvent;
 import net.minecraft.util.Identifier;
@@ -1963,8 +2299,10 @@ int moddedCount = 0;
 for (Identifier id : Registries.SOUND_EVENT.getIds()) {
 if (id.getNamespace().equals("minecraft")) continue;
 SoundEvent event = Registries.SOUND_EVENT.get(id);
+if (event == null) continue;
 Map<String, Object> entry = new LinkedHashMap<>();
-if (event instanceof PolymerSoundEvent polymerSound) {
+PolymerSyncedObject<SoundEvent> synced = PolymerSyncedObject.getSyncedObject(Registries.SOUND_EVENT, event);
+if (synced instanceof PolymerSoundEvent polymerSound) {
 polymerCount++;
 entry.put("type", "polymer");
 try {
@@ -1972,7 +2310,7 @@ Field fallbackField = PolymerSoundEvent.class.getDeclaredField("polymerSound");
 fallbackField.setAccessible(true);
 SoundEvent fallback = (SoundEvent) fallbackField.get(polymerSound);
 if (fallback != null) {
-entry.put("fallback", fallback.getId().toString());
+entry.put("fallback", Registries.SOUND_EVENT.getKey(fallback).toString());
 } else {
 entry.put("fallback", "none");
 }

@@ -274,24 +274,39 @@ public class EntityConverterLogic {
 
     // --- 工具方法 ---
 
-    private static ServerPlayerEntity createSafeFakePlayer() {
-        try {
-            if (!(FakeWorld.INSTANCE_UNSAFE instanceof ServerWorld)) {
-                LOGGER.warn("FakeWorld is not a ServerWorld instance, entity conversion might fail.");
-                return null;
-            }
-            return new ServerPlayerEntity(
-                (MinecraftServer) null,
-                (ServerWorld) FakeWorld.INSTANCE_UNSAFE,
-                new GameProfile(UUID.randomUUID(), "PolymerConverter"),
-                SyncedClientOptions.createDefault()
-            ) {
-                @Override public GameMode getGameMode() { return GameMode.SURVIVAL; }
-            };
-        } catch (Exception e) {
-            LOGGER.error("Failed to create fake player: ", e);
-            return null;
-        }
+    private static ServerPlayerEntity createSafeFakePlayer() {  
+        try {  
+            ServerWorld world = null;  
+            MinecraftServer server = null;  
+            
+            // 从 FakeWorld 获取世界和服务器引用  
+            if (FakeWorld.INSTANCE_UNSAFE instanceof ServerWorld sw) {  
+                world = sw;  
+                server = sw.getServer();  
+            } else if (FakeWorld.INSTANCE_REGULAR instanceof ServerWorld swr) {  
+                world = swr;  
+                server = swr.getServer();  
+            }  
+    
+            if (world == null) {  
+                LOGGER.error("无法为伪造玩家找到有效的 ServerWorld 实例。");  
+                return null;  
+            }  
+    
+            return new ServerPlayerEntity(  
+                server,  
+                world,  
+                new GameProfile(net.minecraft.util.Util.NIL_UUID, "PolymerConverter"),  
+                net.minecraft.network.packet.c2s.common.SyncedClientOptions.createDefault()  
+            ) {  
+                @Override public GameMode getGameMode() { return GameMode.SURVIVAL; }  
+                @Override public boolean isSpectator() { return false; }  
+                @Override public boolean isCreative() { return false; }  
+            };  
+        } catch (Exception e) {  
+            LOGGER.error("创建伪造玩家上下文失败: ", e);  
+            return null;  
+        }  
     }
 
     private static List<Pair<EquipmentSlot, ItemStack>> getAllEquipment(Entity entity) {
