@@ -1,6 +1,20 @@
 plugins {
-    id 'fabric-loom' version "${loom_version}"
+    id 'fabric-loom' version "${project.loom_version}"
     id 'maven-publish'
+}
+
+// ====================================================
+// 【黑科技补丁】动态关闭 Loom GSON 格式化
+// 解决 1.21.11 庞大映射表导致的构建卡死
+// ====================================================
+try {
+    def loomClass = Class.forName("net.fabricmc.loom.LoomGradlePlugin")
+    def gsonField = com.google.gson.Gson.class.getDeclaredField("prettyPrinting")
+    gsonField.setAccessible(true)
+    gsonField.setBoolean(loomClass.GSON, false)
+    println ">> [Success] 已禁用 Loom GSON PrettyPrinting，增强构建稳定性。"
+} catch (Throwable e) {
+    // 第一次配置时类可能未加载，忽略即可
 }
 
 version = project.mod_version
@@ -11,77 +25,66 @@ base {
 }
 
 repositories {
-    // Nucleoid 仓库用于下载 Polymer
-    maven { url 'https://maven.nucleoid.xyz' }
+    mavenCentral()
+    maven { url 'https://maven.fabricmc.net/' }
+    maven { url 'https://maven.nucleoid.xyz/' } // Polymer 仓库
+    maven { url 'https://libraries.minecraft.net/' } // Mojang 仓库
 }
 
 loom {
     splitEnvironmentSourceSets()
-
     mods {
-        // [修改] 这里必须匹配你的 Mod ID，否则开发环境可能无法正确识别 Mixin 或资源
         "polymer_converter" {
             sourceSet sourceSets.main
-            sourceSet sourceSets.client
         }
     }
+    enableTransitiveAccessWideners = false
 }
 
 dependencies {
-    // To change the versions see the gradle.properties file
+    // 核心游戏
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings loom.officialMojangMappings()
-    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
-
-    // Fabric API
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
     
-    // [关键依赖] Polymer Core
-    modImplementation include("eu.pb4:polymer-core:${project.polymer_version}")
+    // 1.21.11 建议直接用官方映射，或者指定确定的 Yarn 版本
+    mappings loom.officialMojangMappings()
 
-    // [新增依赖] Polymer Virtual Entity
-    // 我们的 EntityConverterLogic 用到了 ElementHolder，必须加这个才能编译！
-    // 假设你的 gradle.properties 里 polymer_version 对这个库也适用
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    
+    // Polymer 依赖 (包含家具转换所需的虚拟实体库)
+    modImplementation include("eu.pb4:polymer-core:${project.polymer_version}")
     modImplementation include("eu.pb4:polymer-virtual-entity:${project.polymer_version}")
 }
 
 processResources {
     inputs.property "version", project.version
-
     filesMatching("fabric.mod.json") {
         expand "version": inputs.properties.version
     }
 }
 
 tasks.withType(JavaCompile).configureEach {
+    it.options.encoding = "UTF-8"
     it.options.release = 21
 }
 
 java {
     withSourcesJar()
-
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
 }
 
 jar {
-    inputs.property "archivesName", project.base.archivesName
-
     from("LICENSE") {
-        rename { "${it}_${inputs.properties.archivesName}"}
+        rename { "${it}_${base.archivesName.get()}" }
     }
 }
 
-// configure the maven publication
 publishing {
     publications {
         create("mavenJava", MavenPublication) {
             artifactId = project.archives_base_name
             from components.java
         }
-    }
-
-    repositories {
-        // Add repositories to publish to here.
     }
 }
