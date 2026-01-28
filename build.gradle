@@ -1,5 +1,6 @@
 plugins {
-    id 'fabric-loom' version "${project.loom_version}"
+    // 删掉 project. 前缀，直接引用变量名
+    id 'fabric-loom' version "${loom_version}"
     id 'maven-publish'
 }
 
@@ -14,13 +15,15 @@ try {
 version = project.mod_version
 group = project.maven_group
 
-base { archivesName = project.archives_base_name }
+base {
+    archivesName = project.archives_base_name
+}
 
 repositories {
     mavenCentral()
     maven { url 'https://maven.fabricmc.net/' }
     maven { url 'https://maven.nucleoid.xyz/' } 
-    maven { url 'https://libraries.minecraft.net/' } // 必须有，否则找不到 1.21.11
+    maven { url 'https://libraries.minecraft.net/' } 
 }
 
 dependencies {
@@ -34,16 +37,18 @@ dependencies {
     modImplementation include("eu.pb4:polymer-virtual-entity:${project.polymer_version}")
 }
 
+processResources {
+    inputs.property "version", project.version
+    filesMatching("fabric.mod.json") {
+        expand "version": inputs.properties.version
+    }
+}
+
 tasks.withType(JavaCompile).configureEach {
     it.options.encoding = "UTF-8"
     it.options.release = 21
 }
 
-java {
-    withSourcesJar()
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
-}
 java {
     withSourcesJar()
     sourceCompatibility = JavaVersion.VERSION_21
