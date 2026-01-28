@@ -1,6 +1,5 @@
 plugins {
-    // 读取 gradle.properties 中的 loom_version
-    id 'fabric-loom' version "${project.loom_version}"
+    id 'fabric-loom' version "${loom_version}"
     id 'maven-publish'
 }
 
@@ -12,18 +11,15 @@ base {
 }
 
 repositories {
-    // Nucleoid 仓库 (Polymer)
+    // Nucleoid 仓库用于下载 Polymer
     maven { url 'https://maven.nucleoid.xyz' }
-    // Fabric 仓库
-    maven { url 'https://maven.fabricmc.net/' }
 }
 
 loom {
     splitEnvironmentSourceSets()
 
     mods {
-        // 注意：这里的 ID "polymer_converter" 必须与你的 fabric.mod.json 中的 "id" 保持一致
-        // 即使你的 archives_base_name 是 "modid"，内部 ID 建议保持代码中定义的名称
+        // [修改] 这里必须匹配你的 Mod ID，否则开发环境可能无法正确识别 Mixin 或资源
         "polymer_converter" {
             sourceSet sourceSets.main
             sourceSet sourceSets.client
@@ -32,29 +28,25 @@ loom {
 }
 
 dependencies {
-    // Minecraft 版本 (读取 minecraft_version)
+    // To change the versions see the gradle.properties file
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    
-    // 使用官方映射
     mappings loom.officialMojangMappings()
-    
-    // Fabric Loader (读取 loader_version)
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
-    // Fabric API (读取 fabric_version)
+    // Fabric API
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
     
-    // Polymer Core (读取 polymer_version)
+    // [关键依赖] Polymer Core
     modImplementation include("eu.pb4:polymer-core:${project.polymer_version}")
 
-    // Polymer Virtual Entity (读取 polymer_version)
-    // 这是 EntityConverterLogic 必须的依赖
+    // [新增依赖] Polymer Virtual Entity
+    // 我们的 EntityConverterLogic 用到了 ElementHolder，必须加这个才能编译！
+    // 假设你的 gradle.properties 里 polymer_version 对这个库也适用
     modImplementation include("eu.pb4:polymer-virtual-entity:${project.polymer_version}")
 }
 
 processResources {
-    // 注入版本号到 fabric.mod.json
-    inputs.property "version", project.mod_version
+    inputs.property "version", project.version
 
     filesMatching("fabric.mod.json") {
         expand "version": inputs.properties.version
@@ -62,7 +54,6 @@ processResources {
 }
 
 tasks.withType(JavaCompile).configureEach {
-    // 1.21+ 需要 Java 21
     it.options.release = 21
 }
 
@@ -74,11 +65,14 @@ java {
 }
 
 jar {
+    inputs.property "archivesName", project.base.archivesName
+
     from("LICENSE") {
-        rename { "${it}_${base.archivesName.get()}"}
+        rename { "${it}_${inputs.properties.archivesName}"}
     }
 }
 
+// configure the maven publication
 publishing {
     publications {
         create("mavenJava", MavenPublication) {
