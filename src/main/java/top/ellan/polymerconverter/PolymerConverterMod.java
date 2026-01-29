@@ -2,14 +2,15 @@ package top.ellan.polymerconverter;
 
 import eu.pb4.polymer.core.api.block.PolymerBlock;
 import eu.pb4.polymer.core.api.item.PolymerItem;
+import eu.pb4.polymer.common.impl.CommonImplUtils;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
-import net.minecraft.block.Block;
-import net.minecraft.entity.EntityType;
-import net.minecraft.registry.Registries;
-import net.minecraft.server.command.CommandManager;
-import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
+import net.minecraft.commands.Commands;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.level.block.Block;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,28 +30,24 @@ public class PolymerConverterMod implements ModInitializer {
         LOGGER.info("PolymerConverter 初始化中...");
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
-            dispatcher.register(CommandManager.literal("poly2ce")
-                .requires(eu.pb4.polymer.common.impl.CommonImplUtils.permission("command.poly2ce", 4))
+            dispatcher.register(Commands.literal("poly2ce")
+                // 使用 Polymer 的权限工具类
+                .requires(CommonImplUtils.permission("command.poly2ce", 4))
                 .executes(context -> {
-                    context.getSource().sendFeedback(() -> Text.literal("开始全量转换..."), false);
-                    
-                    // 1. 物品
+                    context.getSource().sendSuccess(() -> Component.literal("开始全量转换..."), false);
+
                     int itemCount = runItemConversion();
-                    // 2. 方块
                     int blockCount = runBlockConversion();
-                    // 3. 实体 (家具)
                     int entityCount = runEntityConversion();
-                    // 4. 声音
                     int soundCount = runSoundConversion();
-                    // 5. 语言 (Lang)
                     int langCount = runLangConversion();
-                    
-                    context.getSource().sendFeedback(() -> Text.literal(
-                        String.format("转换完成！\n物品: %d\n方块: %d\n实体: %d\n声音: %d\n语言条目: %d", 
+
+                    context.getSource().sendSuccess(() -> Component.literal(
+                        String.format("转换完成！\n物品: %d\n方块: %d\n实体: %d\n声音: %d\n语言条目: %d",
                         itemCount, blockCount, entityCount, soundCount, langCount)
                     ), true);
-                    
-                    context.getSource().sendFeedback(() -> Text.literal("文件已保存至 config/craft-engine/ 目录"), false);
+
+                    context.getSource().sendSuccess(() -> Component.literal("文件已保存至 config/craft-engine/ 目录"), false);
                     return 1;
                 }));
         });
@@ -61,8 +58,9 @@ public class PolymerConverterMod implements ModInitializer {
         Map<String, Object> itemsSection = new LinkedHashMap<>();
         int count = 0;
 
-        for (Identifier id : Registries.ITEM.getIds()) {
-            if (Registries.ITEM.get(id) instanceof PolymerItem polymerItem) {
+        for (Identifier id : BuiltInRegistries.ITEM.keySet()) {
+            var item = BuiltInRegistries.ITEM.getValue(id);
+            if (item instanceof PolymerItem polymerItem) {
                 String key = id.getNamespace() + ":" + id.getPath();
                 itemsSection.put(key, ConverterLogic.convert(polymerItem));
                 count++;
@@ -78,8 +76,8 @@ public class PolymerConverterMod implements ModInitializer {
         Map<String, Object> blocksSection = new LinkedHashMap<>();
         int count = 0;
 
-        for (Identifier id : Registries.BLOCK.getIds()) {
-            Block block = Registries.BLOCK.get(id);
+        for (Identifier id : BuiltInRegistries.BLOCK.keySet()) {
+            Block block = BuiltInRegistries.BLOCK.getValue(id);
             if (block instanceof PolymerBlock polymerBlock) {
                 String key = id.getNamespace() + ":" + id.getPath();
                 blocksSection.put(key, BlockConverterLogic.convert(polymerBlock));
@@ -96,12 +94,12 @@ public class PolymerConverterMod implements ModInitializer {
         Map<String, Object> furnitureSection = new LinkedHashMap<>();
         int count = 0;
 
-        for (Identifier id : Registries.ENTITY_TYPE.getIds()) {
+        for (Identifier id : BuiltInRegistries.ENTITY_TYPE.keySet()) {
             if (id.getNamespace().equals("minecraft")) continue;
 
-            EntityType<?> type = Registries.ENTITY_TYPE.get(id);
+            EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.getValue(id);
             Map<String, Object> config = EntityConverterLogic.convert(type);
-            
+
             if (!config.isEmpty() && !config.containsKey("_note")) {
                 String key = id.getNamespace() + ":" + id.getPath();
                 furnitureSection.put(key, config);
@@ -116,21 +114,19 @@ public class PolymerConverterMod implements ModInitializer {
     private int runSoundConversion() {
         Map<String, Object> config = SoundConverterLogic.convert();
         writeConfig("converted_sounds.yml", config);
-        
+
         if (config.get("sounds") instanceof Map<?,?> map) {
             return map.size();
         }
         return 0;
     }
 
-    // === 核心修复点 ===
     private int runLangConversion() {
         Map<String, Object> config = LanguageConverterLogic.convert();
         writeConfig("converted_lang.yml", config);
-        
+
         int count = 0;
         try {
-            // 安全地检查每一步是否为 null，并使用 instanceof 自动转换类型
             Object itemsObj = config.get("lang#items");
             if (itemsObj instanceof Map<?,?> itemsMap) {
                 Object enUsItems = itemsMap.get("en_us");
@@ -147,7 +143,6 @@ public class PolymerConverterMod implements ModInitializer {
                 }
             }
         } catch (Exception ignored) {
-            // 忽略异常，只返回统计到的数量
         }
         return count;
     }

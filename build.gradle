@@ -11,13 +11,23 @@ base {
 }
 
 repositories {
-    // 修复：Gradle 8+ 建议使用 url = uri(...) 避免警告
-    maven { url = uri('https://maven.nucleoid.xyz') } 
+    maven { 
+        url = uri('https://maven.nucleoid.xyz')
+        content {
+            includeGroup("xyz.nucleoid")
+            includeGroup("eu.pb4")
+        }
+    }
+    maven { url = uri('https://maven.shedaniel.me/') }
+    maven { url = uri('https://jitpack.io') }
+    
+    // 添加 Parchment 仓库
+    maven { url = uri('https://maven.parchmentmc.org') }
 }
 
 loom {
     splitEnvironmentSourceSets()
-
+    
     mods {
         "poly2ce" {
             sourceSet sourceSets.main
@@ -26,30 +36,36 @@ loom {
 }
 
 dependencies {
+    // Minecraft 核心
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     
+    // 使用 layered mappings（与 Polymer 一致）
+    mappings loom.layered {
+        officialMojangMappings()
+        parchment("org.parchmentmc.data:parchment-1.21.1:2024.11.17@zip")
+    }
+    
+    // Fabric Loader 和 API
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
-
-    // Polymer Core
-    modImplementation include("eu.pb4:polymer-core:${project.polymer_core_version}")
     
-    // 修复：Virtual Entity 必须使用它自己的版本号，不能混用 core 的版本
-    // 请确保你在 gradle.properties 里定义了 polymer_virtual_entity_version
+    // Polymer 依赖
+    modImplementation include("eu.pb4:polymer-common:${project.polymer_core_version}")
+    modImplementation include("eu.pb4:polymer-core:${project.polymer_core_version}")
     modImplementation include("eu.pb4:polymer-virtual-entity:${project.polymer_core_version}")
 }
 
 processResources {
     inputs.property "version", project.version
-
+    
     filesMatching("fabric.mod.json") {
-        expand "version": inputs.properties.version
+        expand "version": project.version
     }
 }
 
 tasks.withType(JavaCompile).configureEach {
     it.options.release = 21
+    it.options.encoding = 'UTF-8'
 }
 
 java {
@@ -59,10 +75,8 @@ java {
 }
 
 jar {
-    inputs.property "archivesName", project.base.archivesName // 兼容性修复
-
     from("LICENSE") {
-        rename { "${it}_${inputs.properties.archivesName}"}
+        rename { "${it}_${project.archives_base_name}"}
     }
 }
 
