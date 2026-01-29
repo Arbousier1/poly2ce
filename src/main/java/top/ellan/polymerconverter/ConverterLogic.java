@@ -47,6 +47,7 @@ public class ConverterLogic {
              return itemConfig;
         }
 
+        // [前置检查] 必须确保 level 不为空，因为我们需要它的 RegistryAccess
         if (level == null) {
             itemConfig.put("_error", "ServerLevel cannot be null (required for RegistryAccess)");
             return itemConfig;
@@ -65,17 +66,20 @@ public class ConverterLogic {
             fakePlayer = createSafeFakePlayer(level);
 
             if (fakePlayer != null) {
-                // 有玩家环境，使用玩家上下文
+                // 情况 1: 有玩家环境，使用标准玩家上下文 (最佳)
                 ctx = PacketContext.create(fakePlayer);
             } else {
-                // [修复核心] 降级：无玩家上下文时，必须传入 registryAccess
-                // 否则 PacketContext 内部 handler 为 null，导致 field_14140 空指针错误
+                // [修复核心] 情况 2: 无法创建玩家时的降级
+                // 必须传入 level.registryAccess()，否则 PacketContext 内部 handler 为 null
+                // 这解决了 field_14140 空指针错误
                 ctx = PacketContext.create(level.registryAccess());
             }
 
+            // 获取 TooltipType，如果没玩家则使用默认 NORMAL
             TooltipFlag tooltipType = fakePlayer != null ? 
                 PolymerUtils.getTooltipType(fakePlayer) : TooltipFlag.Default.NORMAL;
 
+            // 获取客户端物品堆栈
             clientStack = PolymerItemUtils.getPolymerItemStack(serverStack, tooltipType, ctx);
 
             if (clientStack == null || clientStack.isEmpty()) {
@@ -84,6 +88,7 @@ public class ConverterLogic {
         } catch (Exception e) {
             LOGGER.error("Failed to get polymer item stack for {}", registeredItem, e);
             itemConfig.put("_error", "Context/Stack creation failed: " + e.getMessage());
+            // 发生致命错误时回退到 barrier，防止整个转换中断
             itemConfig.put("material", "barrier");
             return itemConfig;
         }
@@ -94,9 +99,8 @@ public class ConverterLogic {
         itemConfig.put("material", BuiltInRegistries.ITEM.getKey(clientItem).toString());
 
         // --- B. 模型 (Model) ---
-        // 尝试从 Polymer 逻辑获取模型 ID
         Identifier modelId = polymerItem.getPolymerItemModel(serverStack, ctx);
-        // 或者从 1.21.2+ 的 DataComponent 获取
+        // 1.21.2+ DataComponent 兼容
         if (modelId == null && clientStack.has(DataComponents.ITEM_MODEL)) {
             modelId = clientStack.get(DataComponents.ITEM_MODEL);
         }
@@ -111,9 +115,11 @@ public class ConverterLogic {
         // --- C. 物品数据 (Data) ---
         Map<String, Object> dataMap = new LinkedHashMap<>();
         Map<String, Object> components = new LinkedHashMap<>();
+        
+        // 获取注册表查询器，优先用玩家的，否则用世界的
         HolderLookup.Provider registryLookup = fakePlayer != null ? fakePlayer.registryAccess() : level.registryAccess();
 
-        // 1. 名称 (Item Name / Custom Name)
+        // 1. 名称
         if (clientStack.has(DataComponents.CUSTOM_NAME)) {
             Component nameText = clientStack.getHoverName();
             dataMap.put("item-name", serializeText(nameText, registryLookup));
@@ -137,15 +143,12 @@ public class ConverterLogic {
         // 3. CustomModelData
         if (clientStack.has(DataComponents.CUSTOM_MODEL_DATA)) {
             CustomModelData cmd = clientStack.get(DataComponents.CUSTOM_MODEL_DATA);
-            if (cmd != null) {
-                if (!cmd.floats().isEmpty()) {
-                    // CE 历史遗留：custom-model-data 通常指第一个 float 转 int
-                    dataMap.put("custom-model-data", (int) cmd.floats().getFirst().floatValue());
-                }
+            if (cmd != null && !cmd.floats().isEmpty()) {
+                dataMap.put("custom-model-data", (int) cmd.floats().getFirst().floatValue());
             }
         }
 
-        // 4. 附魔 (Enchantments)
+        // 4. 附魔
         if (clientStack.has(DataComponents.ENCHANTMENTS)) {
             var enchants = clientStack.get(DataComponents.ENCHANTMENTS);
             if (enchants != null && !enchants.isEmpty()) {
@@ -161,7 +164,7 @@ public class ConverterLogic {
             }
         }
 
-        // 5. 属性修饰符 (Attribute Modifiers)
+        // 5. 属性修饰符
         if (clientStack.has(DataComponents.ATTRIBUTE_MODIFIERS)) {
             ItemAttributeModifiers attrs = clientStack.get(DataComponents.ATTRIBUTE_MODIFIERS);
             if (attrs != null && !attrs.modifiers().isEmpty()) {
@@ -179,16 +182,15 @@ public class ConverterLogic {
             }
         }
 
-        // 6. 染色 (Dyed Color)
+        // 6. 染色
         if (clientStack.has(DataComponents.DYED_COLOR)) {
             DyedItemColor dyedColor = clientStack.get(DataComponents.DYED_COLOR);
             if (dyedColor != null) {
-                int rgb = dyedColor.rgb();
-                dataMap.put("dyed-color", String.format(Locale.ROOT, "#%06X", (0xFFFFFF & rgb)));
+                dataMap.put("dyed-color", String.format(Locale.ROOT, "#%06X", (0xFFFFFF & dyedColor.rgb())));
             }
         }
 
-        // 7. 杂项布尔/数值属性
+        // 7. 杂项属性
         if (clientStack.has(DataComponents.UNBREAKABLE)) dataMap.put("unbreakable", true);
         if (clientStack.has(DataComponents.ENCHANTMENT_GLINT_OVERRIDE)) {
             Boolean glint = clientStack.get(DataComponents.ENCHANTMENT_GLINT_OVERRIDE);
@@ -197,13 +199,15 @@ public class ConverterLogic {
         if (clientStack.has(DataComponents.MAX_DAMAGE)) dataMap.put("max-damage", clientStack.get(DataComponents.MAX_DAMAGE));
         if (clientStack.has(DataComponents.DAMAGE)) dataMap.put("damage", clientStack.get(DataComponents.DAMAGE));
         if (clientStack.has(DataComponents.REPAIR_COST)) dataMap.put("repair-cost", clientStack.get(DataComponents.REPAIR_COST));
+        
+        // Rarity
         if (clientStack.has(DataComponents.RARITY)) {
             Rarity rarity = clientStack.get(DataComponents.RARITY);
             if (rarity != null) dataMap.put("rarity", rarity.name().toLowerCase());
         }
 
-        // 8. 复杂组件 (Components) - 映射到 data.components
-
+        // 8. 复杂组件 (Food/Tool/Jukebox/Trim/Equippable)
+        
         // Food
         if (clientStack.has(DataComponents.FOOD)) {
             FoodProperties food = clientStack.get(DataComponents.FOOD);
@@ -212,7 +216,6 @@ public class ConverterLogic {
                 foodMap.put("nutrition", food.nutrition());
                 foodMap.put("saturation", food.saturation());
                 foodMap.put("can_always_eat", food.canAlwaysEat());
-                // CE 支持在 data 下直接写 food
                 dataMap.put("food", foodMap);
             }
         }
@@ -228,7 +231,7 @@ public class ConverterLogic {
             }
         }
 
-        // Jukebox Playable
+        // Jukebox
         if (clientStack.has(DataComponents.JUKEBOX_PLAYABLE)) {
             JukeboxPlayable jukebox = clientStack.get(DataComponents.JUKEBOX_PLAYABLE);
             if (jukebox != null && jukebox.song().key().isPresent()) {
@@ -247,13 +250,13 @@ public class ConverterLogic {
             }
         }
 
-        // Equippable (1.21.2+)
+        // Equippable
         if (clientStack.has(DataComponents.EQUIPPABLE)) {
             var eq = clientStack.get(DataComponents.EQUIPPABLE);
             if (eq != null) {
                 Map<String, Object> eqMap = new LinkedHashMap<>();
                 eqMap.put("slot", eq.slot().getSerializedName());
-                eq.assetId().ifPresent(id -> eqMap.put("asset-id", id.toString())); // CE use asset-id
+                eq.assetId().ifPresent(id -> eqMap.put("asset-id", id.toString()));
                 eq.cameraOverlay().ifPresent(id -> eqMap.put("camera-overlay", id.toString()));
                 eqMap.put("damage-on-hurt", eq.damageOnHurt());
                 eqMap.put("dispensable", eq.dispensable());
@@ -268,7 +271,7 @@ public class ConverterLogic {
             if (style != null) dataMap.put("tooltip-style", style.toString());
         }
 
-        // --- 组装 Data ---
+        // 组装 data 和 components
         if (!components.isEmpty()) {
             dataMap.put("components", components);
         }
@@ -279,7 +282,7 @@ public class ConverterLogic {
         // --- D. 物品设置 (Settings) ---
         Map<String, Object> settings = new LinkedHashMap<>();
 
-        // 1. 标签 (Tags)
+        // Tags
         Optional<ResourceKey<Item>> resourceKey = BuiltInRegistries.ITEM.getResourceKey(registeredItem);
         if (resourceKey.isPresent()) {
              Optional<Holder.Reference<Item>> holder = BuiltInRegistries.ITEM.get(resourceKey.get());
@@ -291,9 +294,10 @@ public class ConverterLogic {
              }
         }
 
-        // 2. 杂项设置
+        // Fire/Lava Immune (1.20.5+ method via DataComponents)
         if (serverStack.has(DataComponents.DAMAGE_RESISTANT)) {
             var resistance = serverStack.get(DataComponents.DAMAGE_RESISTANT);
+            // 简单的检查方式：如果抗性标签包含 fire
             if (resistance.types().location().getPath().contains("fire")) {
                 settings.put("invulnerable", List.of("fire", "lava"));
             }
@@ -308,7 +312,6 @@ public class ConverterLogic {
         }
 
         // --- E. 行为 (Behavior) ---
-        // 自动识别 BlockItem 并转换为 block_item 行为
         if (registeredItem instanceof BlockItem blockItem) {
             Map<String, Object> behavior = new LinkedHashMap<>();
             behavior.put("type", "block_item");
