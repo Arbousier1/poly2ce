@@ -11,9 +11,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerLevel; // 必须导入
-import net.minecraft.server.level.ServerPlayer; // 必须导入
-import net.minecraft.server.level.ClientInformation; // 必须导入
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.ClientInformation;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.*;
 import net.minecraft.world.level.block.entity.*;
@@ -37,7 +37,7 @@ public class BlockConverterLogic {
      * 转换方块逻辑
      * @param registeredBlock 实际注册在游戏中的方块对象
      * @param polymerBlock    Polymer 逻辑接口
-     * @param level           [新增] 服务器世界上下文，用于创建 FakePlayer
+     * @param level           服务器世界上下文
      */
     public static Map<String, Object> convert(Block registeredBlock, PolymerBlock polymerBlock, ServerLevel level) {
         Map<String, Object> blockConfig = new LinkedHashMap<>();
@@ -57,28 +57,48 @@ public class BlockConverterLogic {
 
             BlockState defaultState = block.defaultBlockState();
 
-            // 1. 创建安全上下文环境 (使用传入的 ServerLevel)
-            ServerPlayer fakePlayer = createSafeFakePlayer(level);
-            if (fakePlayer == null) {
-                blockConfig.put("_error", "Failed to create fake player context (Valid ServerLevel required)");
-                return blockConfig;
+            // =================================================================================
+            // [关键修复] 上下文创建与视觉状态获取 (带降级保护)
+            // =================================================================================
+            PacketContext ctx;
+            BlockState visualState;
+            
+            try {
+                // 方案 A: 尝试使用 FakePlayer (为了获取最佳视觉效果)
+                ServerPlayer fakePlayer = createSafeFakePlayer(level);
+                if (fakePlayer != null) {
+                    ctx = PacketContext.create(fakePlayer);
+                    // 这里可能会抛出 NPE (如果 mod 尝试访问 player.connection)
+                    visualState = PolymerBlockUtils.getPolymerBlockState(defaultState, ctx);
+                } else {
+                    throw new IllegalStateException("FakePlayer creation failed");
+                }
+            } catch (Exception e) {
+                // 方案 B: 降级为无玩家上下文 (解决 handler is null 问题)
+                // LOGGER.debug("Context fallback for {}: {}", BuiltInRegistries.BLOCK.getKey(block), e.getMessage());
+                
+                // 创建一个没有任何玩家绑定的上下文
+                ctx = PacketContext.create(); 
+                
+                try {
+                    visualState = PolymerBlockUtils.getPolymerBlockState(defaultState, ctx);
+                } catch (Exception e2) {
+                    // 方案 C: 彻底失败，直接使用原始状态
+                    LOGGER.warn("Visual state fetch completely failed for {}: {}", BuiltInRegistries.BLOCK.getKey(block), e2.getMessage());
+                    visualState = defaultState;
+                }
             }
-
-            PacketContext ctx = PacketContext.create(fakePlayer);
-
-            LOGGER.info("Converting Polymer block: {}", BuiltInRegistries.BLOCK.getKey(block));
-
-            // --- A. 基础材质与属性 ---
-            // 使用 polymerBlock 接口获取视觉状态
-            BlockState visualState = PolymerBlockUtils.getPolymerBlockState(defaultState, ctx);
+            
             Block visualBlock = visualState.getBlock();
+            // =================================================================================
 
-            LOGGER.debug("Visual block: {}", BuiltInRegistries.BLOCK.getKey(visualBlock));
+            LOGGER.info("Converting Polymer block: {} -> {}", BuiltInRegistries.BLOCK.getKey(block), BuiltInRegistries.BLOCK.getKey(visualBlock));
 
             // 提取完整方块设置
             extractBlockSettings(block, defaultState, visualBlock, settings);
 
             // --- B. Polymer 特有逻辑 ---
+            // 注意：这里需要判空，因为如果降级到了 方案B，ctx.getPlayer() 是 null
             if (ctx.getPlayer() != null) {
                 try {
                     // 使用 polymerBlock 接口触发发送逻辑
@@ -88,11 +108,13 @@ public class BlockConverterLogic {
                 }
             }
 
-            // 获取破坏状态
-            BlockState breakState = polymerBlock.getPolymerBreakEventBlockState(defaultState, ctx);
-            if (breakState != null && !breakState.getBlock().equals(visualBlock)) {
-                settings.put("break-state", BuiltInRegistries.BLOCK.getKey(breakState.getBlock()).toString());
-            }
+            // 获取破坏状态 (同样需要异常保护)
+            try {
+                BlockState breakState = polymerBlock.getPolymerBreakEventBlockState(defaultState, ctx);
+                if (breakState != null && !breakState.getBlock().equals(visualBlock)) {
+                    settings.put("break-state", BuiltInRegistries.BLOCK.getKey(breakState.getBlock()).toString());
+                }
+            } catch (Exception ignored) {}
 
             if (polymerBlock.forceLightUpdates(defaultState)) {
                 settings.put("force-light-updates", true);
@@ -130,7 +152,7 @@ public class BlockConverterLogic {
             }
 
             // --- D. 剔除优化 (Culling) ---
-            // 注意：这里仍然使用 FakeWorld.INSTANCE_UNSAFE 来检查物理属性，因为我们不需要 Player 上下文来检查物理特性
+            // 使用 FakeWorld.INSTANCE_UNSAFE 进行物理检查是安全的，不需要 Player
             if (visualState.isRedstoneConductor(FakeWorld.INSTANCE_UNSAFE, BlockPos.ZERO)) {
                 Map<String, Object> cullingData = new LinkedHashMap<>();
                 cullingData.put("occlude", true);
@@ -154,10 +176,17 @@ public class BlockConverterLogic {
 
                 for (BlockState state : stateManager.getPossibleStates()) {
                     String variantKey = getVariantKey(state, properties);
-                    // 关键点：使用 polymerBlock 接口获取特定状态下的视觉效果
-                    BlockState subVisualState = PolymerBlockUtils.getBlockStateSafely(  
-                        polymerBlock, state, PolymerBlockUtils.NESTED_DEFAULT_DISTANCE, ctx  
-                    );
+                    
+                    // 获取子状态 (带异常保护，使用当前有效的 ctx)
+                    BlockState subVisualState;
+                    try {
+                        subVisualState = PolymerBlockUtils.getBlockStateSafely(  
+                            polymerBlock, state, PolymerBlockUtils.NESTED_DEFAULT_DISTANCE, ctx  
+                        );
+                    } catch (Exception e) {
+                        subVisualState = visualState; // 如果失败，回退到基础视觉状态
+                    }
+                    
                     String subVisualBlockId = BuiltInRegistries.BLOCK.getKey(subVisualState.getBlock()).toString();
 
                     Map<String, Object> appearance = new LinkedHashMap<>();
@@ -278,8 +307,6 @@ public class BlockConverterLogic {
                 blockConfig.put("state", stateSection);
             }
 
-            LOGGER.info("Successfully converted block: {}", BuiltInRegistries.BLOCK.getKey(block));
-
         } catch (Exception e) {
             LOGGER.error("Block conversion failed for {}",
                 BuiltInRegistries.BLOCK.getKey(block), e);
@@ -354,7 +381,7 @@ public class BlockConverterLogic {
         Set<String> correctTools = new HashSet<>();
         if (state.is(BlockTags.MINEABLE_WITH_PICKAXE)) correctTools.add("minecraft:pickaxe");
         if (state.is(BlockTags.MINEABLE_WITH_AXE)) correctTools.add("minecraft:axe");
-        if (state.is(BlockTags.MINEABLE_WITH_SHOVEL)) correctTools.add("minecraft:shovel");
+        if (state.is(BlockTags.MINEABLE_WITH_SHOVEL)) correctTools.add("minecraft:mineable/shovel");
         if (state.is(BlockTags.MINEABLE_WITH_HOE)) correctTools.add("minecraft:hoe");
 
         if (state.is(BlockTags.NEEDS_DIAMOND_TOOL)) correctTools.add("minecraft:diamond_tier");
@@ -468,7 +495,7 @@ public class BlockConverterLogic {
             block instanceof SkullBlock;
     }
 
-    // [关键修复] 不再依赖 FakeWorld 强转，而是使用传入的 ServerLevel
+    @SuppressWarnings("resource")
     private static ServerPlayer createSafeFakePlayer(ServerLevel world) {
         try {
             if (world == null) {
