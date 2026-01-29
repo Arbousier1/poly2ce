@@ -3,6 +3,7 @@ package top.ellan.polymerconverter;
 import eu.pb4.polymer.core.api.block.PolymerBlock;
 import eu.pb4.polymer.core.api.item.PolymerItem;
 import eu.pb4.polymer.core.api.item.PolymerItemUtils;
+import eu.pb4.polymer.core.api.utils.PolymerSyncedObject; // [新增]
 import xyz.nucleoid.packettweaker.PacketContext;
 
 // Mojang 映射标准导入
@@ -12,7 +13,6 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TooltipFlag;
 
 import net.minecraft.core.registries.BuiltInRegistries;
-// 使用 Identifier
 import net.minecraft.resources.Identifier;
 
 import java.util.LinkedHashMap;
@@ -33,23 +33,28 @@ public class LanguageConverterLogic {
         for (Identifier id : BuiltInRegistries.ITEM.keySet()) {
             if (id.getNamespace().equals("minecraft")) continue;
 
-            // FIX: 使用 getValue(id) 直接获取 Item 对象
             Item item = BuiltInRegistries.ITEM.getValue(id);
             
-            if (item instanceof PolymerItem) {
+            // [修复] 检查是否是 Polymer 物品 (支持 Overlay)
+            // 逻辑：如果它是 PolymerItem 实例 OR 它有注册的 Overlay
+            boolean isPolymer = (item instanceof PolymerItem) || 
+                                (PolymerSyncedObject.getSyncedObject(BuiltInRegistries.ITEM, item) != null);
+
+            if (isPolymer) {
                 String key = "item." + id.getNamespace() + "." + id.getPath();
                 
-                // 获取 Polymer 转换后的客户端堆栈
+                // PolymerItemUtils.getPolymerItemStack 会自动处理 Overlay 的情况
                 ItemStack clientStack = PolymerItemUtils.getPolymerItemStack(
                     item.getDefaultInstance(), 
                     TooltipFlag.NORMAL, 
                     ctx
                 );
                 
-                // 获取显示名称
-                String name = clientStack.getHoverName().getString();
-                
-                itemLangEn.put(key, "<!i>" + name);
+                if (clientStack != null) {
+                    // 获取显示名称
+                    String name = clientStack.getHoverName().getString();
+                    itemLangEn.put(key, "<!i>" + name);
+                }
             }
         }
 
@@ -57,14 +62,21 @@ public class LanguageConverterLogic {
         for (Identifier id : BuiltInRegistries.BLOCK.keySet()) {
             if (id.getNamespace().equals("minecraft")) continue;
 
-            // FIX: 使用 getValue(id) 直接获取 Block 对象
             Block block = BuiltInRegistries.BLOCK.getValue(id);
             
-            if (block instanceof PolymerBlock) {
+            // [修复] 检查是否是 Polymer 方块 (支持 Overlay)
+            boolean isPolymer = (block instanceof PolymerBlock) || 
+                                (PolymerSyncedObject.getSyncedObject(BuiltInRegistries.BLOCK, block) != null);
+            
+            if (isPolymer) {
                 String key = "block_name:" + id.getNamespace() + ":" + id.getPath();
                 
-                // 获取名称
+                // 获取默认状态的名称
                 String name = block.getName().getString();
+                
+                // 也可以尝试获取转换后的方块名称 (虽然通常方块名称由原始方块决定)
+                // BlockState visualState = PolymerBlockUtils.getPolymerBlockState(block.defaultBlockState(), ctx);
+                // String visualName = visualState.getBlock().getName().getString();
                 
                 blockLangEn.put(key, "<!i>" + name);
             }

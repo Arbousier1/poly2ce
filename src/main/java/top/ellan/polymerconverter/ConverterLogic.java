@@ -28,15 +28,19 @@ import com.google.gson.JsonElement;
 
 import java.util.*;
 
-@SuppressWarnings({"null", "unused", "resource"})
+@SuppressWarnings({"null", "resource"})
 public class ConverterLogic {
     
-    public static Map<String, Object> convert(PolymerItem polymerItem) {
+    // [修复] 修改方法签名：接收两个参数
+    // registeredItem: 实际注册的物品 (用于创建 ItemStack, 获取注册ID)
+    // polymerItem: Polymer 逻辑接口 (用于获取客户端模型, Overlay 逻辑)
+    public static Map<String, Object> convert(Item registeredItem, PolymerItem polymerItem) {
         Map<String, Object> itemConfig = new LinkedHashMap<>();
         
-        if (!(polymerItem instanceof Item)) {
-            itemConfig.put("_error", "PolymerItem is not an instance of Item");
-            return itemConfig;
+        // [修复] 移除原来的 instanceof 检查，因为在 Overlay 模式下 polymerItem 可能不是 Item
+        if (registeredItem == null || polymerItem == null) {
+             itemConfig.put("_error", "Input item or logic cannot be null");
+             return itemConfig;
         }
 
         ServerPlayer fakePlayer = null;
@@ -44,7 +48,9 @@ public class ConverterLogic {
         HolderLookup.Provider registryLookup = null;
 
         try {
-            ItemStack serverStack = new ItemStack((Item) polymerItem);
+            // [修复] 使用 registeredItem 创建 ItemStack
+            // 这确保了我们操作的是真实存在的物品，而不是 Polymer 的代理对象
+            ItemStack serverStack = new ItemStack(registeredItem);
             
             fakePlayer = createSafeFakePlayer();
             
@@ -62,6 +68,7 @@ public class ConverterLogic {
             }
 
             // --- A. 基础材质与模型 ---
+            // 使用 polymerItem 接口调用逻辑
             Item clientBaseItem = polymerItem.getPolymerItem(serverStack, ctx);
             if (clientBaseItem == null) {
                 itemConfig.put("_error", "getPolymerItem returned null");

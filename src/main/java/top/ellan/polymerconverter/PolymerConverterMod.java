@@ -3,6 +3,7 @@ package top.ellan.polymerconverter;
 import eu.pb4.polymer.core.api.block.PolymerBlock;
 import eu.pb4.polymer.core.api.item.PolymerItem;
 import eu.pb4.polymer.common.impl.CommonImplUtils;
+import eu.pb4.polymer.core.api.utils.PolymerSyncedObject; // [新增]
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.Commands;
@@ -10,6 +11,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,7 +33,6 @@ public class PolymerConverterMod implements ModInitializer {
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             dispatcher.register(Commands.literal("poly2ce")
-                // 使用 Polymer 的权限工具类
                 .requires(CommonImplUtils.permission("command.poly2ce", 4))
                 .executes(context -> {
                     context.getSource().sendSuccess(() -> Component.literal("开始全量转换..."), false);
@@ -59,11 +60,29 @@ public class PolymerConverterMod implements ModInitializer {
         int count = 0;
 
         for (Identifier id : BuiltInRegistries.ITEM.keySet()) {
-            var item = BuiltInRegistries.ITEM.getValue(id);
-            if (item instanceof PolymerItem polymerItem) {
+            Item item = BuiltInRegistries.ITEM.getValue(id);
+            PolymerItem polymerLogic = null;
+
+            // 1. 检查直接实现接口的情况
+            if (item instanceof PolymerItem pi) {
+                polymerLogic = pi;
+            } 
+            // 2. 检查 Overlay (使用 PolymerSyncedObject 获取)
+            else {
+                // [修复] 使用 PolymerSyncedObject.getSyncedObject 获取 Overlay
+                polymerLogic = (PolymerItem) PolymerSyncedObject.getSyncedObject(BuiltInRegistries.ITEM, item);
+            }
+
+            // 如果找到了 Polymer 逻辑 (无论是直接实现还是 Overlay)
+            if (polymerLogic != null) {
                 String key = id.getNamespace() + ":" + id.getPath();
-                itemsSection.put(key, ConverterLogic.convert(polymerItem));
-                count++;
+                // 关键修改：同时传入原始 Item (获取属性) 和 Polymer 逻辑 (获取模型)
+                try {
+                    itemsSection.put(key, ConverterLogic.convert(item, polymerLogic));
+                    count++;
+                } catch (Exception e) {
+                    LOGGER.error("Error converting item: " + key, e);
+                }
             }
         }
         rootConfig.put("items", itemsSection);
@@ -78,10 +97,27 @@ public class PolymerConverterMod implements ModInitializer {
 
         for (Identifier id : BuiltInRegistries.BLOCK.keySet()) {
             Block block = BuiltInRegistries.BLOCK.getValue(id);
-            if (block instanceof PolymerBlock polymerBlock) {
+            PolymerBlock polymerLogic = null;
+
+            // 1. 检查直接实现接口的情况
+            if (block instanceof PolymerBlock pb) {
+                polymerLogic = pb;
+            } 
+            // 2. 检查 Overlay
+            else {
+                // [修复] 使用 PolymerSyncedObject.getSyncedObject 获取 Overlay
+                polymerLogic = (PolymerBlock) PolymerSyncedObject.getSyncedObject(BuiltInRegistries.BLOCK, block);
+            }
+
+            if (polymerLogic != null) {
                 String key = id.getNamespace() + ":" + id.getPath();
-                blocksSection.put(key, BlockConverterLogic.convert(polymerBlock));
-                count++;
+                // 关键修改：同时传入原始 Block 和 Polymer 逻辑
+                try {
+                    blocksSection.put(key, BlockConverterLogic.convert(block, polymerLogic));
+                    count++;
+                } catch (Exception e) {
+                    LOGGER.error("Error converting block: " + key, e);
+                }
             }
         }
         rootConfig.put("blocks", blocksSection);
@@ -98,12 +134,16 @@ public class PolymerConverterMod implements ModInitializer {
             if (id.getNamespace().equals("minecraft")) continue;
 
             EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.getValue(id);
-            Map<String, Object> config = EntityConverterLogic.convert(type);
+            try {
+                Map<String, Object> config = EntityConverterLogic.convert(type);
 
-            if (!config.isEmpty() && !config.containsKey("_note")) {
-                String key = id.getNamespace() + ":" + id.getPath();
-                furnitureSection.put(key, config);
-                count++;
+                if (!config.isEmpty() && !config.containsKey("_note")) {
+                    String key = id.getNamespace() + ":" + id.getPath();
+                    furnitureSection.put(key, config);
+                    count++;
+                }
+            } catch (Exception e) {
+                // Ignore entities that fail conversion
             }
         }
         rootConfig.put("furniture", furnitureSection);
@@ -112,39 +152,48 @@ public class PolymerConverterMod implements ModInitializer {
     }
 
     private int runSoundConversion() {
-        Map<String, Object> config = SoundConverterLogic.convert();
-        writeConfig("converted_sounds.yml", config);
+        try {
+            Map<String, Object> config = SoundConverterLogic.convert();
+            writeConfig("converted_sounds.yml", config);
 
-        if (config.get("sounds") instanceof Map<?,?> map) {
-            return map.size();
+            if (config.get("sounds") instanceof Map<?,?> map) {
+                return map.size();
+            }
+        } catch (Exception e) {
+            LOGGER.error("Sound conversion failed", e);
         }
         return 0;
     }
 
     private int runLangConversion() {
-        Map<String, Object> config = LanguageConverterLogic.convert();
-        writeConfig("converted_lang.yml", config);
-
-        int count = 0;
         try {
-            Object itemsObj = config.get("lang#items");
-            if (itemsObj instanceof Map<?,?> itemsMap) {
-                Object enUsItems = itemsMap.get("en_us");
-                if (enUsItems instanceof Map<?,?> items) {
-                    count += items.size();
-                }
-            }
+            Map<String, Object> config = LanguageConverterLogic.convert();
+            writeConfig("converted_lang.yml", config);
 
-            Object blocksObj = config.get("lang#blocks");
-            if (blocksObj instanceof Map<?,?> blocksMap) {
-                Object enUsBlocks = blocksMap.get("en_us");
-                if (enUsBlocks instanceof Map<?,?> blocks) {
-                    count += blocks.size();
+            int count = 0;
+            try {
+                Object itemsObj = config.get("lang#items");
+                if (itemsObj instanceof Map<?,?> itemsMap) {
+                    Object enUsItems = itemsMap.get("en_us");
+                    if (enUsItems instanceof Map<?,?> items) {
+                        count += items.size();
+                    }
                 }
+
+                Object blocksObj = config.get("lang#blocks");
+                if (blocksObj instanceof Map<?,?> blocksMap) {
+                    Object enUsBlocks = blocksMap.get("en_us");
+                    if (enUsBlocks instanceof Map<?,?> blocks) {
+                        count += blocks.size();
+                    }
+                }
+            } catch (Exception ignored) {
             }
-        } catch (Exception ignored) {
+            return count;
+        } catch (Exception e) {
+            LOGGER.error("Language conversion failed", e);
         }
-        return count;
+        return 0;
     }
 
     private void writeConfig(String fileName, Map<String, Object> data) {
