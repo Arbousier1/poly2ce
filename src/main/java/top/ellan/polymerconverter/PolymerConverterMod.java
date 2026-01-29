@@ -7,10 +7,11 @@ import eu.pb4.polymer.core.api.utils.PolymerSyncedObject;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.Commands;
+import net.minecraft.core.Holder; // [新增] 需要导入 Holder
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
-import net.minecraft.server.level.ServerLevel; // [新增] 需要导入
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
@@ -39,15 +40,11 @@ public class PolymerConverterMod implements ModInitializer {
                 .executes(context -> {
                     context.getSource().sendSuccess(() -> Component.literal("开始全量转换..."), false);
 
-                    // [修复] 获取当前的 ServerLevel
+                    // 获取当前的 ServerLevel
                     ServerLevel level = context.getSource().getLevel();
 
-                    int itemCount = runItemConversion();
-                    
-                    // [修复] 将 level 传递给方块转换方法
+                    int itemCount = runItemConversion(level);
                     int blockCount = runBlockConversion(level);
-                    
-                    // [修复] 将 level 传递给实体转换方法
                     int entityCount = runEntityConversion(level);
                     
                     int soundCount = runSoundConversion();
@@ -64,26 +61,35 @@ public class PolymerConverterMod implements ModInitializer {
         });
     }
 
-    private int runItemConversion() {
+    private int runItemConversion(ServerLevel level) {
         Map<String, Object> rootConfig = new LinkedHashMap<>();
         Map<String, Object> itemsSection = new LinkedHashMap<>();
         int count = 0;
 
         for (Identifier id : BuiltInRegistries.ITEM.keySet()) {
-            Item item = BuiltInRegistries.ITEM.getValue(id);
+            // [修复] 解包 Optional<Holder.Reference<Item>>
+            Item item = BuiltInRegistries.ITEM.get(id)
+                .map(Holder::value)
+                .orElse(null);
+
+            if (item == null) continue;
+
             PolymerItem polymerLogic = null;
 
             if (item instanceof PolymerItem pi) {
                 polymerLogic = pi;
             } 
             else {
-                polymerLogic = (PolymerItem) PolymerSyncedObject.getSyncedObject(BuiltInRegistries.ITEM, item);
+                Object synced = PolymerSyncedObject.getSyncedObject(BuiltInRegistries.ITEM, item);
+                if (synced instanceof PolymerItem pi) {
+                    polymerLogic = pi;
+                }
             }
 
             if (polymerLogic != null) {
                 String key = id.getNamespace() + ":" + id.getPath();
                 try {
-                    itemsSection.put(key, ConverterLogic.convert(item, polymerLogic));
+                    itemsSection.put(key, ConverterLogic.convert(item, polymerLogic, level));
                     count++;
                 } catch (Exception e) {
                     LOGGER.error("Error converting item: " + key, e);
@@ -95,27 +101,34 @@ public class PolymerConverterMod implements ModInitializer {
         return count;
     }
 
-    // [修复] 修改方法签名，接收 ServerLevel
     private int runBlockConversion(ServerLevel level) {
         Map<String, Object> rootConfig = new LinkedHashMap<>();
         Map<String, Object> blocksSection = new LinkedHashMap<>();
         int count = 0;
 
         for (Identifier id : BuiltInRegistries.BLOCK.keySet()) {
-            Block block = BuiltInRegistries.BLOCK.getValue(id);
+            // [修复] 解包 Optional<Holder.Reference<Block>>
+            Block block = BuiltInRegistries.BLOCK.get(id)
+                .map(Holder::value)
+                .orElse(null);
+            
+            if (block == null) continue;
+
             PolymerBlock polymerLogic = null;
 
             if (block instanceof PolymerBlock pb) {
                 polymerLogic = pb;
             } 
             else {
-                polymerLogic = (PolymerBlock) PolymerSyncedObject.getSyncedObject(BuiltInRegistries.BLOCK, block);
+                Object synced = PolymerSyncedObject.getSyncedObject(BuiltInRegistries.BLOCK, block);
+                if (synced instanceof PolymerBlock pb) {
+                    polymerLogic = pb;
+                }
             }
 
             if (polymerLogic != null) {
                 String key = id.getNamespace() + ":" + id.getPath();
                 try {
-                    // [修复] 将 level 传入 convert 方法
                     blocksSection.put(key, BlockConverterLogic.convert(block, polymerLogic, level));
                     count++;
                 } catch (Exception e) {
@@ -128,7 +141,6 @@ public class PolymerConverterMod implements ModInitializer {
         return count;
     }
 
-    // [修复] 修改方法签名，接收 ServerLevel
     private int runEntityConversion(ServerLevel level) {
         Map<String, Object> rootConfig = new LinkedHashMap<>();
         Map<String, Object> furnitureSection = new LinkedHashMap<>();
@@ -137,9 +149,14 @@ public class PolymerConverterMod implements ModInitializer {
         for (Identifier id : BuiltInRegistries.ENTITY_TYPE.keySet()) {
             if (id.getNamespace().equals("minecraft")) continue;
 
-            EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.getValue(id);
+            // [修复] 解包 Optional<Holder.Reference<EntityType<?>>>
+            EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.get(id)
+                .map(Holder::value)
+                .orElse(null);
+
+            if (type == null) continue;
+
             try {
-                // [修复] 将 level 传入 convert 方法
                 Map<String, Object> config = EntityConverterLogic.convert(type, level);
 
                 if (!config.isEmpty() && !config.containsKey("_note")) {

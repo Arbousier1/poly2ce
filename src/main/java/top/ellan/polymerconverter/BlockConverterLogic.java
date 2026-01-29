@@ -34,10 +34,10 @@ public class BlockConverterLogic {
     private static final UUID NIL_UUID = new UUID(0L, 0L);
 
     /**
-     * 转换方块逻辑
-     * @param registeredBlock 实际注册在游戏中的方块对象
-     * @param polymerBlock    Polymer 逻辑接口
-     * @param level           服务器世界上下文
+     * Converts a Polymer block to CraftEngine configuration format.
+     * @param registeredBlock The actual block registered in the game.
+     * @param polymerBlock    The Polymer logic interface.
+     * @param level           The ServerLevel context for creating fake players.
      */
     public static Map<String, Object> convert(Block registeredBlock, PolymerBlock polymerBlock, ServerLevel level) {
         Map<String, Object> blockConfig = new LinkedHashMap<>();
@@ -46,7 +46,7 @@ public class BlockConverterLogic {
         Block block = registeredBlock;
 
         try {
-            // 检查注册状态
+            // Check registration status
             boolean isSynced = PolymerSyncedObject.getSyncedObject(BuiltInRegistries.BLOCK, block) != null;
             boolean isInstance = block instanceof PolymerBlock;
 
@@ -58,33 +58,29 @@ public class BlockConverterLogic {
             BlockState defaultState = block.defaultBlockState();
 
             // =================================================================================
-            // [关键修复] 上下文创建与视觉状态获取 (带降级保护)
+            // Context Creation & Visual State Fetching (With NPE Fallback Protection)
             // =================================================================================
             PacketContext ctx;
             BlockState visualState;
             
             try {
-                // 方案 A: 尝试使用 FakePlayer (为了获取最佳视觉效果)
+                // Strategy A: Try with FakePlayer (Best visual accuracy)
                 ServerPlayer fakePlayer = createSafeFakePlayer(level);
                 if (fakePlayer != null) {
                     ctx = PacketContext.create(fakePlayer);
-                    // 这里可能会抛出 NPE (如果 mod 尝试访问 player.connection)
+                    // This might throw NPE if the mod accesses player.connection
                     visualState = PolymerBlockUtils.getPolymerBlockState(defaultState, ctx);
                 } else {
                     throw new IllegalStateException("FakePlayer creation failed");
                 }
             } catch (Exception e) {
-                // 方案 B: 降级为无玩家上下文 (解决 handler is null 问题)
-                // LOGGER.debug("Context fallback for {}: {}", BuiltInRegistries.BLOCK.getKey(block), e.getMessage());
-                
-                // 创建一个没有任何玩家绑定的上下文
+                // Strategy B: Fallback to player-less context
                 ctx = PacketContext.create(); 
-                
                 try {
                     visualState = PolymerBlockUtils.getPolymerBlockState(defaultState, ctx);
                 } catch (Exception e2) {
-                    // 方案 C: 彻底失败，直接使用原始状态
-                    LOGGER.warn("Visual state fetch completely failed for {}: {}", BuiltInRegistries.BLOCK.getKey(block), e2.getMessage());
+                    // Strategy C: Complete failure, fallback to default state
+                    LOGGER.warn("Visual state fetch failed for {}: {}", BuiltInRegistries.BLOCK.getKey(block), e2.getMessage());
                     visualState = defaultState;
                 }
             }
@@ -94,82 +90,74 @@ public class BlockConverterLogic {
 
             LOGGER.info("Converting Polymer block: {} -> {}", BuiltInRegistries.BLOCK.getKey(block), BuiltInRegistries.BLOCK.getKey(visualBlock));
 
-            // 提取完整方块设置
+            // 1. Extract Settings
             extractBlockSettings(block, defaultState, visualBlock, settings);
 
-            // --- B. Polymer 特有逻辑 ---
-            // 注意：这里需要判空，因为如果降级到了 方案B，ctx.getPlayer() 是 null
+            // 2. Polymer Send Logic (Check for null player to avoid NPE)
             if (ctx.getPlayer() != null) {
                 try {
-                    // 使用 polymerBlock 接口触发发送逻辑
                     polymerBlock.onPolymerBlockSend(defaultState, BlockPos.ZERO.mutable(), ctx.asNotNullWithPlayer());
                 } catch (Exception e) {
                     LOGGER.debug("onPolymerBlockSend failed: {}", e.getMessage());
                 }
             }
 
-            // 获取破坏状态 (同样需要异常保护)
-            try {
-                BlockState breakState = polymerBlock.getPolymerBreakEventBlockState(defaultState, ctx);
-                if (breakState != null && !breakState.getBlock().equals(visualBlock)) {
-                    settings.put("break-state", BuiltInRegistries.BLOCK.getKey(breakState.getBlock()).toString());
-                }
-            } catch (Exception ignored) {}
-
+            // Note: forceLightUpdates is handled by the server, safe to include
             if (polymerBlock.forceLightUpdates(defaultState)) {
                 settings.put("force-light-updates", true);
             }
 
-            // --- C. 方块实体支持 (Block Entity & Renderer) ---
+            // 3. Block Entities
             if (block instanceof EntityBlock) {
                 Map<String, Object> blockEntityConfig = new LinkedHashMap<>();
-                String type;
-                String renderer;
+                String type = "custom";
+                String renderer = "custom";
 
-                if (block instanceof ChestBlock) {
-                    type = "chest";
-                    renderer = "chest";
-                } else if (block instanceof SignBlock) {
-                    type = "sign";
-                    renderer = "sign";
-                } else if (block instanceof SpawnerBlock) {
-                    type = "spawner";
-                    renderer = "spawner";
-                } else if (block instanceof ShulkerBoxBlock) {
-                    type = "shulker_box";
-                    renderer = "shulker_box";
-                } else if (block instanceof BedBlock) {
-                    type = "bed";
-                    renderer = "bed";
-                } else {
-                    type = "custom";
-                    renderer = "custom";
-                }
+                if (block instanceof ChestBlock) { type = "chest"; renderer = "chest"; }
+                else if (block instanceof SignBlock) { type = "sign"; renderer = "sign"; }
+                else if (block instanceof SpawnerBlock) { type = "spawner"; renderer = "spawner"; }
+                else if (block instanceof ShulkerBoxBlock) { type = "shulker_box"; renderer = "shulker_box"; }
+                else if (block instanceof BedBlock) { type = "bed"; renderer = "bed"; }
 
                 blockEntityConfig.put("type", type);
                 blockEntityConfig.put("renderer", renderer);
                 settings.put("block-entity", blockEntityConfig);
             }
 
-            // --- D. 剔除优化 (Culling) ---
-            // 使用 FakeWorld.INSTANCE_UNSAFE 进行物理检查是安全的，不需要 Player
+            // 4. Occlusion / Light Blocking
+            // Use can-occlude instead of culling
             if (visualState.isRedstoneConductor(FakeWorld.INSTANCE_UNSAFE, BlockPos.ZERO)) {
-                Map<String, Object> cullingData = new LinkedHashMap<>();
-                cullingData.put("occlude", true);
-                settings.put("culling", cullingData);
+                settings.put("can-occlude", true);
             }
 
-            // --- E. 方块状态 (States & Properties) ---
+            // 5. Block States & Appearances
             StateDefinition<Block, BlockState> stateManager = block.getStateDefinition();
             Collection<Property<?>> properties = stateManager.getProperties();
-            Map<String, Object> stateSection = new LinkedHashMap<>();
 
-            if (!properties.isEmpty()) {
+            if (properties.isEmpty()) {
+                // --- Single State Block ---
+                Map<String, Object> stateConfig = new LinkedHashMap<>();
+                
+                // Try to get precise visual state again (logic consistency)
+                BlockState singleVisualState;
+                try {
+                    singleVisualState = PolymerBlockUtils.getBlockStateSafely(polymerBlock, defaultState, PolymerBlockUtils.NESTED_DEFAULT_DISTANCE, ctx);
+                } catch (Exception e) {
+                    singleVisualState = visualState;
+                }
+                
+                fillAppearanceConfig(stateConfig, singleVisualState);
+                blockConfig.put("state", stateConfig);
+
+            } else {
+                // --- Multi-State Block ---
+                Map<String, Object> statesSection = new LinkedHashMap<>();
                 Map<String, Object> propConfig = new LinkedHashMap<>();
+                
                 for (Property<?> prop : properties) {
                     propConfig.put(prop.getName(), createPropertyDefinition(prop, defaultState));
                 }
-                stateSection.put("properties", propConfig);
+                statesSection.put("properties", propConfig);
 
                 Map<String, Object> appearances = new LinkedHashMap<>();
                 Map<String, Object> variants = new LinkedHashMap<>();
@@ -177,37 +165,18 @@ public class BlockConverterLogic {
                 for (BlockState state : stateManager.getPossibleStates()) {
                     String variantKey = getVariantKey(state, properties);
                     
-                    // 获取子状态 (带异常保护，使用当前有效的 ctx)
+                    // Fetch sub-state visual with fallback protection
                     BlockState subVisualState;
                     try {
-                        subVisualState = PolymerBlockUtils.getBlockStateSafely(  
-                            polymerBlock, state, PolymerBlockUtils.NESTED_DEFAULT_DISTANCE, ctx  
+                        subVisualState = PolymerBlockUtils.getBlockStateSafely(
+                            polymerBlock, state, PolymerBlockUtils.NESTED_DEFAULT_DISTANCE, ctx
                         );
                     } catch (Exception e) {
-                        subVisualState = visualState; // 如果失败，回退到基础视觉状态
+                        subVisualState = visualState;
                     }
-                    
-                    String subVisualBlockId = BuiltInRegistries.BLOCK.getKey(subVisualState.getBlock()).toString();
 
                     Map<String, Object> appearance = new LinkedHashMap<>();
-
-                    if (shouldUseCustomModel(subVisualState.getBlock())) {
-                        Map<String, Object> modelConfig = new LinkedHashMap<>();
-                        modelConfig.put("template", "default:model/cube");
-
-                        Map<String, Object> args = new LinkedHashMap<>();
-                        String baseName = BuiltInRegistries.BLOCK.getKey(subVisualState.getBlock()).getPath();
-                        args.put("model", "minecraft:block/" + baseName);
-
-                        Map<String, String> textures = new LinkedHashMap<>();
-                        textures.put("all", "minecraft:block/" + baseName);
-                        args.put("textures", textures);
-
-                        modelConfig.put("arguments", args);
-                        appearance.put("model", modelConfig);
-                    } else {
-                        appearance.put("auto-state", subVisualBlockId);
-                    }
+                    fillAppearanceConfig(appearance, subVisualState);
 
                     appearances.put(variantKey, appearance);
 
@@ -216,11 +185,12 @@ public class BlockConverterLogic {
                     variants.put(variantKey, variant);
                 }
 
-                stateSection.put("appearances", appearances);
-                stateSection.put("variants", variants);
+                statesSection.put("appearances", appearances);
+                statesSection.put("variants", variants);
+                blockConfig.put("states", statesSection);
             }
 
-            // --- F. 特殊方块处理 (Head Block) ---
+            // 6. Special Handling: Polymer Heads
             if (polymerBlock instanceof PolymerHeadBlock headBlock) {
                 settings.put("material", "player_head");
                 try {
@@ -249,21 +219,18 @@ public class BlockConverterLogic {
                 }
             }
 
-            // --- G. 行为推断 ---
+            // 7. Behaviors & Events
             List<Map<String, Object>> behaviors = inferBehaviors(block, polymerBlock);
             if (!behaviors.isEmpty()) {
                 blockConfig.put("behaviors", behaviors);
             }
 
-            // --- H. 事件系统 ---
             Map<String, Object> events = new LinkedHashMap<>();
             if (block instanceof ButtonBlock || block instanceof LeverBlock) {
                 events.put("on-interact", Arrays.asList("handle_redstone_toggle"));
-            } else if (block instanceof DoorBlock || block instanceof TrapDoorBlock ||
-                block instanceof FenceGateBlock) {
+            } else if (block instanceof DoorBlock || block instanceof TrapDoorBlock || block instanceof FenceGateBlock) {
                 events.put("on-interact", Arrays.asList("handle_door_toggle"));
-            } else if (block instanceof ChestBlock || block instanceof BarrelBlock ||
-                block instanceof ShulkerBoxBlock) {
+            } else if (block instanceof ChestBlock || block instanceof BarrelBlock || block instanceof ShulkerBoxBlock) {
                 events.put("on-interact", Arrays.asList("open_inventory"));
             } else if (block instanceof TntBlock) {
                 events.put("on-interact", Arrays.asList("ignite_tnt"));
@@ -273,17 +240,12 @@ public class BlockConverterLogic {
                 blockConfig.put("events", events);
             }
 
-            // --- I. 掉落表配置 ---
+            // 8. Loot Tables
             Map<String, Object> lootConfig = new LinkedHashMap<>();
-
-            boolean isOre = defaultState.is(BlockTags.COAL_ORES) ||
-                defaultState.is(BlockTags.IRON_ORES) ||
-                defaultState.is(BlockTags.COPPER_ORES) ||
-                defaultState.is(BlockTags.GOLD_ORES) ||
-                defaultState.is(BlockTags.REDSTONE_ORES) ||
-                defaultState.is(BlockTags.LAPIS_ORES) ||
-                defaultState.is(BlockTags.DIAMOND_ORES) ||
-                defaultState.is(BlockTags.EMERALD_ORES);
+            boolean isOre = defaultState.is(BlockTags.COAL_ORES) || defaultState.is(BlockTags.IRON_ORES) ||
+                defaultState.is(BlockTags.COPPER_ORES) || defaultState.is(BlockTags.GOLD_ORES) ||
+                defaultState.is(BlockTags.REDSTONE_ORES) || defaultState.is(BlockTags.LAPIS_ORES) ||
+                defaultState.is(BlockTags.DIAMOND_ORES) || defaultState.is(BlockTags.EMERALD_ORES);
 
             if (isOre || block instanceof RedStoneOreBlock) {
                 lootConfig.put("template", "default:loot_table/ore");
@@ -296,23 +258,17 @@ public class BlockConverterLogic {
             }
             blockConfig.put("loot", lootConfig);
 
-            // 最终验证
-            if (settings.get("material") == null) {
-                throw new IllegalStateException("Material detection failed");
-            }
-
+            // Final Validation
+            if (settings.get("material") == null) throw new IllegalStateException("Material detection failed");
             blockConfig.put("settings", settings);
 
-            if (!stateSection.isEmpty()) {
-                blockConfig.put("state", stateSection);
-            }
-
         } catch (Exception e) {
-            LOGGER.error("Block conversion failed for {}",
-                BuiltInRegistries.BLOCK.getKey(block), e);
+            LOGGER.error("Block conversion failed for {}", BuiltInRegistries.BLOCK.getKey(block), e);
             blockConfig.put("_error", "Conversion failed: " + e.getMessage());
             blockConfig.put("_error_type", e.getClass().getSimpleName());
             blockConfig.put("_stack_trace", getStackTraceString(e));
+            
+            // Minimal fallback settings
             settings.put("material", "barrier");
             blockConfig.put("settings", settings);
         }
@@ -320,10 +276,9 @@ public class BlockConverterLogic {
         return blockConfig;
     }
 
-    // --- 核心逻辑提取方法 ---
+    // --- Core Extraction Methods ---
 
-    private static void extractBlockSettings(Block block, BlockState state, Block visualBlock,
-                                             Map<String, Object> settings) {
+    private static void extractBlockSettings(Block block, BlockState state, Block visualBlock, Map<String, Object> settings) {
         settings.put("material", BuiltInRegistries.BLOCK.getKey(visualBlock).toString());
         settings.put("hardness", block.defaultBlockState().getDestroySpeed(FakeWorld.INSTANCE_UNSAFE, BlockPos.ZERO));
         settings.put("resistance", block.getExplosionResistance());
@@ -348,25 +303,32 @@ public class BlockConverterLogic {
             settings.put("custom-data", customData);
         }
 
-        if (visualBlock == Blocks.TNT || state.is(BlockTags.WOOL) ||
-            state.is(BlockTags.LOGS) || state.is(BlockTags.PLANKS)) {
+        if (visualBlock == Blocks.TNT || state.is(BlockTags.WOOL) || state.is(BlockTags.LOGS) || state.is(BlockTags.PLANKS)) {
             settings.put("burnable", true);
         }
 
         settings.put("replaceable", state.canBeReplaced());
-        settings.put("push-reaction", state.getPistonPushReaction().name().toLowerCase());
+        
+        // Fix: Use UPPERCASE for Enum values
+        settings.put("push-reaction", state.getPistonPushReaction().name()); 
+        
         settings.put("require-correct-tools", true);
         settings.put("respect-tool-component", false);
-        settings.put("incorrect-tool-speed", 0.3f);
+        
+        // Fix: Correct property name
+        settings.put("incorrect-tool-dig-speed", 0.3f); 
 
         try {
-            settings.put("instrument", state.instrument().ordinal());
+            // Fix: Use Enum name (UPPERCASE) instead of ordinal
+            settings.put("instrument", state.instrument().getSerializedName().toUpperCase());
         } catch (Exception ignored) {
-            settings.put("instrument", 0);
+            settings.put("instrument", "HARP");
         }
 
-        settings.put("fluid-state", state.getFluidState() != null && !state.getFluidState().isEmpty());
-        settings.put("propagates-skylight-down", state.useShapeForLightOcclusion());
+        settings.put("fluid-state", state.getFluidState() != null && !state.getFluidState().isEmpty() ? "water" : "empty");
+        
+        // Fix: Correct property name
+        settings.put("propagate-skylight", state.useShapeForLightOcclusion()); 
 
         try {
             settings.put("is-redstone-conductor", state.isRedstoneConductor(FakeWorld.INSTANCE_UNSAFE, BlockPos.ZERO));
@@ -383,7 +345,6 @@ public class BlockConverterLogic {
         if (state.is(BlockTags.MINEABLE_WITH_AXE)) correctTools.add("minecraft:axe");
         if (state.is(BlockTags.MINEABLE_WITH_SHOVEL)) correctTools.add("minecraft:mineable/shovel");
         if (state.is(BlockTags.MINEABLE_WITH_HOE)) correctTools.add("minecraft:hoe");
-
         if (state.is(BlockTags.NEEDS_DIAMOND_TOOL)) correctTools.add("minecraft:diamond_tier");
         if (state.is(BlockTags.NEEDS_IRON_TOOL)) correctTools.add("minecraft:iron_tier");
 
@@ -406,6 +367,28 @@ public class BlockConverterLogic {
         List<String> tags = inferToolTags(state);
         if (!tags.isEmpty()) {
             settings.put("tags", tags);
+        }
+    }
+
+    private static void fillAppearanceConfig(Map<String, Object> config, BlockState visualState) {
+        String visualBlockId = BuiltInRegistries.BLOCK.getKey(visualState.getBlock()).toString();
+        
+        if (shouldUseCustomModel(visualState.getBlock())) {
+            Map<String, Object> modelConfig = new LinkedHashMap<>();
+            modelConfig.put("template", "default:model/cube");
+
+            Map<String, Object> args = new LinkedHashMap<>();
+            String baseName = BuiltInRegistries.BLOCK.getKey(visualState.getBlock()).getPath();
+            args.put("model", "minecraft:block/" + baseName);
+
+            Map<String, String> textures = new LinkedHashMap<>();
+            textures.put("all", "minecraft:block/" + baseName);
+            args.put("textures", textures);
+
+            modelConfig.put("arguments", args);
+            config.put("model", modelConfig);
+        } else {
+            config.put("auto-state", visualBlockId);
         }
     }
 
@@ -448,7 +431,7 @@ public class BlockConverterLogic {
         return def;
     }
 
-    // --- 安全工具方法 ---
+    // --- Utility Methods ---
 
     private static <T extends Comparable<T>> String getSafeValue(BlockState state, Property<?> property) {
         try {
@@ -495,14 +478,9 @@ public class BlockConverterLogic {
             block instanceof SkullBlock;
     }
 
-    @SuppressWarnings("resource")
     private static ServerPlayer createSafeFakePlayer(ServerLevel world) {
         try {
-            if (world == null) {
-                LOGGER.error("Cannot create fake player: provided ServerLevel is null");
-                return null;
-            }
-
+            if (world == null) return null;
             return new ServerPlayer(
                 world.getServer(),
                 world,
@@ -513,7 +491,6 @@ public class BlockConverterLogic {
                 @Override public boolean isCreative() { return false; }
             };
         } catch (Exception e) {
-            LOGGER.error("Failed to create fake player", e);
             return null;
         }
     }
