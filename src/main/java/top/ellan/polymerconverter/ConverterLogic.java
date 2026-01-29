@@ -37,18 +37,23 @@ public class ConverterLogic {
      * 转换物品逻辑
      * @param registeredItem 实际注册的物品
      * @param polymerItem    Polymer 逻辑接口
-     * @param level          服务器世界上下文 (用于创建 FakePlayer)
+     * @param level          服务器世界上下文 (必须提供，用于获取注册表)
      */
     public static Map<String, Object> convert(Item registeredItem, PolymerItem polymerItem, ServerLevel level) {
         Map<String, Object> itemConfig = new LinkedHashMap<>();
-        
+
         if (registeredItem == null || polymerItem == null) {
              itemConfig.put("_error", "Input item or logic cannot be null");
              return itemConfig;
         }
 
+        if (level == null) {
+            itemConfig.put("_error", "ServerLevel cannot be null (required for RegistryAccess)");
+            return itemConfig;
+        }
+
         ItemStack serverStack = new ItemStack(registeredItem);
-        
+
         // =================================================================================
         // 上下文创建与客户端堆栈获取 (带 NPE 降级保护)
         // =================================================================================
@@ -58,22 +63,26 @@ public class ConverterLogic {
 
         try {
             fakePlayer = createSafeFakePlayer(level);
+
             if (fakePlayer != null) {
+                // 有玩家环境，使用玩家上下文
                 ctx = PacketContext.create(fakePlayer);
             } else {
-                // 降级：无玩家上下文
-                ctx = PacketContext.create();
+                // [修复核心] 降级：无玩家上下文时，必须传入 registryAccess
+                // 否则 PacketContext 内部 handler 为 null，导致 field_14140 空指针错误
+                ctx = PacketContext.create(level.registryAccess());
             }
-            
+
             TooltipFlag tooltipType = fakePlayer != null ? 
                 PolymerUtils.getTooltipType(fakePlayer) : TooltipFlag.Default.NORMAL;
-            
+
             clientStack = PolymerItemUtils.getPolymerItemStack(serverStack, tooltipType, ctx);
-            
+
             if (clientStack == null || clientStack.isEmpty()) {
                 throw new IllegalStateException("getPolymerItemStack returned null/empty");
             }
         } catch (Exception e) {
+            LOGGER.error("Failed to get polymer item stack for {}", registeredItem, e);
             itemConfig.put("_error", "Context/Stack creation failed: " + e.getMessage());
             itemConfig.put("material", "barrier");
             return itemConfig;
@@ -102,7 +111,7 @@ public class ConverterLogic {
         // --- C. 物品数据 (Data) ---
         Map<String, Object> dataMap = new LinkedHashMap<>();
         Map<String, Object> components = new LinkedHashMap<>();
-        HolderLookup.Provider registryLookup = fakePlayer != null ? fakePlayer.registryAccess() : null;
+        HolderLookup.Provider registryLookup = fakePlayer != null ? fakePlayer.registryAccess() : level.registryAccess();
 
         // 1. 名称 (Item Name / Custom Name)
         if (clientStack.has(DataComponents.CUSTOM_NAME)) {
@@ -194,7 +203,7 @@ public class ConverterLogic {
         }
 
         // 8. 复杂组件 (Components) - 映射到 data.components
-        
+
         // Food
         if (clientStack.has(DataComponents.FOOD)) {
             FoodProperties food = clientStack.get(DataComponents.FOOD);
@@ -269,8 +278,8 @@ public class ConverterLogic {
 
         // --- D. 物品设置 (Settings) ---
         Map<String, Object> settings = new LinkedHashMap<>();
-        
-        // 1. 标签 (Tags) [修复：解决 deprecated 警告]
+
+        // 1. 标签 (Tags)
         Optional<ResourceKey<Item>> resourceKey = BuiltInRegistries.ITEM.getResourceKey(registeredItem);
         if (resourceKey.isPresent()) {
              Optional<Holder.Reference<Item>> holder = BuiltInRegistries.ITEM.get(resourceKey.get());
@@ -282,8 +291,7 @@ public class ConverterLogic {
              }
         }
 
-        // 2. 杂项设置 [修复：解决 isFireResistant 错误]
-        // 1.20.5+ 防火属性存在于 DataComponent 中
+        // 2. 杂项设置
         if (serverStack.has(DataComponents.DAMAGE_RESISTANT)) {
             var resistance = serverStack.get(DataComponents.DAMAGE_RESISTANT);
             if (resistance.types().location().getPath().contains("fire")) {
