@@ -3,13 +3,14 @@ package top.ellan.polymerconverter;
 import eu.pb4.polymer.core.api.block.PolymerBlock;
 import eu.pb4.polymer.core.api.item.PolymerItem;
 import eu.pb4.polymer.common.impl.CommonImplUtils;
-import eu.pb4.polymer.core.api.utils.PolymerSyncedObject; // [新增]
+import eu.pb4.polymer.core.api.utils.PolymerSyncedObject;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ServerLevel; // [新增] 需要导入
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
@@ -23,6 +24,7 @@ import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+@SuppressWarnings({"null"})
 public class PolymerConverterMod implements ModInitializer {
     public static final String MOD_ID = "polymer_converter";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
@@ -37,9 +39,17 @@ public class PolymerConverterMod implements ModInitializer {
                 .executes(context -> {
                     context.getSource().sendSuccess(() -> Component.literal("开始全量转换..."), false);
 
+                    // [修复] 获取当前的 ServerLevel
+                    ServerLevel level = context.getSource().getLevel();
+
                     int itemCount = runItemConversion();
-                    int blockCount = runBlockConversion();
-                    int entityCount = runEntityConversion();
+                    
+                    // [修复] 将 level 传递给方块转换方法
+                    int blockCount = runBlockConversion(level);
+                    
+                    // [修复] 将 level 传递给实体转换方法
+                    int entityCount = runEntityConversion(level);
+                    
                     int soundCount = runSoundConversion();
                     int langCount = runLangConversion();
 
@@ -63,20 +73,15 @@ public class PolymerConverterMod implements ModInitializer {
             Item item = BuiltInRegistries.ITEM.getValue(id);
             PolymerItem polymerLogic = null;
 
-            // 1. 检查直接实现接口的情况
             if (item instanceof PolymerItem pi) {
                 polymerLogic = pi;
             } 
-            // 2. 检查 Overlay (使用 PolymerSyncedObject 获取)
             else {
-                // [修复] 使用 PolymerSyncedObject.getSyncedObject 获取 Overlay
                 polymerLogic = (PolymerItem) PolymerSyncedObject.getSyncedObject(BuiltInRegistries.ITEM, item);
             }
 
-            // 如果找到了 Polymer 逻辑 (无论是直接实现还是 Overlay)
             if (polymerLogic != null) {
                 String key = id.getNamespace() + ":" + id.getPath();
-                // 关键修改：同时传入原始 Item (获取属性) 和 Polymer 逻辑 (获取模型)
                 try {
                     itemsSection.put(key, ConverterLogic.convert(item, polymerLogic));
                     count++;
@@ -90,7 +95,8 @@ public class PolymerConverterMod implements ModInitializer {
         return count;
     }
 
-    private int runBlockConversion() {
+    // [修复] 修改方法签名，接收 ServerLevel
+    private int runBlockConversion(ServerLevel level) {
         Map<String, Object> rootConfig = new LinkedHashMap<>();
         Map<String, Object> blocksSection = new LinkedHashMap<>();
         int count = 0;
@@ -99,21 +105,18 @@ public class PolymerConverterMod implements ModInitializer {
             Block block = BuiltInRegistries.BLOCK.getValue(id);
             PolymerBlock polymerLogic = null;
 
-            // 1. 检查直接实现接口的情况
             if (block instanceof PolymerBlock pb) {
                 polymerLogic = pb;
             } 
-            // 2. 检查 Overlay
             else {
-                // [修复] 使用 PolymerSyncedObject.getSyncedObject 获取 Overlay
                 polymerLogic = (PolymerBlock) PolymerSyncedObject.getSyncedObject(BuiltInRegistries.BLOCK, block);
             }
 
             if (polymerLogic != null) {
                 String key = id.getNamespace() + ":" + id.getPath();
-                // 关键修改：同时传入原始 Block 和 Polymer 逻辑
                 try {
-                    blocksSection.put(key, BlockConverterLogic.convert(block, polymerLogic));
+                    // [修复] 将 level 传入 convert 方法
+                    blocksSection.put(key, BlockConverterLogic.convert(block, polymerLogic, level));
                     count++;
                 } catch (Exception e) {
                     LOGGER.error("Error converting block: " + key, e);
@@ -125,7 +128,8 @@ public class PolymerConverterMod implements ModInitializer {
         return count;
     }
 
-    private int runEntityConversion() {
+    // [修复] 修改方法签名，接收 ServerLevel
+    private int runEntityConversion(ServerLevel level) {
         Map<String, Object> rootConfig = new LinkedHashMap<>();
         Map<String, Object> furnitureSection = new LinkedHashMap<>();
         int count = 0;
@@ -135,7 +139,8 @@ public class PolymerConverterMod implements ModInitializer {
 
             EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.getValue(id);
             try {
-                Map<String, Object> config = EntityConverterLogic.convert(type);
+                // [修复] 将 level 传入 convert 方法
+                Map<String, Object> config = EntityConverterLogic.convert(type, level);
 
                 if (!config.isEmpty() && !config.containsKey("_note")) {
                     String key = id.getNamespace() + ":" + id.getPath();
@@ -144,6 +149,7 @@ public class PolymerConverterMod implements ModInitializer {
                 }
             } catch (Exception e) {
                 // Ignore entities that fail conversion
+                LOGGER.debug("Skipping entity " + id + ": " + e.getMessage());
             }
         }
         rootConfig.put("furniture", furnitureSection);

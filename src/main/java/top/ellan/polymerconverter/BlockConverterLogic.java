@@ -11,8 +11,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.ServerLevel; // 必须导入
+import net.minecraft.server.level.ServerPlayer; // 必须导入
+import net.minecraft.server.level.ClientInformation; // 必须导入
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.*;
 import net.minecraft.world.level.block.entity.*;
@@ -34,24 +35,21 @@ public class BlockConverterLogic {
 
     /**
      * 转换方块逻辑
-     * @param registeredBlock 实际注册在游戏中的方块对象 (用于获取硬度、材质、Drop表等)
-     * @param polymerBlock    Polymer 逻辑接口 (可能是方块本身，也可能是 Overlay 对象)
+     * @param registeredBlock 实际注册在游戏中的方块对象
+     * @param polymerBlock    Polymer 逻辑接口
+     * @param level           [新增] 服务器世界上下文，用于创建 FakePlayer
      */
-    public static Map<String, Object> convert(Block registeredBlock, PolymerBlock polymerBlock) {
+    public static Map<String, Object> convert(Block registeredBlock, PolymerBlock polymerBlock, ServerLevel level) {
         Map<String, Object> blockConfig = new LinkedHashMap<>();
         Map<String, Object> settings = new LinkedHashMap<>();
 
-        // 为了保持后续代码改动最小，这里定义 block 变量指向 registeredBlock
         Block block = registeredBlock;
 
         try {
-            // [修复] 检查注册状态
-            // 1. 是否通过 Overlay 注册 (例如 Farmers Delight) -> 存在于 PolymerSyncedObject 中
+            // 检查注册状态
             boolean isSynced = PolymerSyncedObject.getSyncedObject(BuiltInRegistries.BLOCK, block) != null;
-            // 2. 是否直接实现了接口
             boolean isInstance = block instanceof PolymerBlock;
 
-            // 如果既没有 Sync 对象，本身也不是 PolymerBlock 实例，发出警告
             if (!isSynced && !isInstance) {
                 LOGGER.warn("Block {} appears not to be registered with Polymer correctly (No Sync/Interface)", 
                     BuiltInRegistries.BLOCK.getKey(block));
@@ -59,10 +57,10 @@ public class BlockConverterLogic {
 
             BlockState defaultState = block.defaultBlockState();
 
-            // 1. 创建安全上下文环境
-            ServerPlayer fakePlayer = createSafeFakePlayer();
+            // 1. 创建安全上下文环境 (使用传入的 ServerLevel)
+            ServerPlayer fakePlayer = createSafeFakePlayer(level);
             if (fakePlayer == null) {
-                blockConfig.put("_error", "Failed to create fake player context");
+                blockConfig.put("_error", "Failed to create fake player context (Valid ServerLevel required)");
                 return blockConfig;
             }
 
@@ -77,7 +75,7 @@ public class BlockConverterLogic {
 
             LOGGER.debug("Visual block: {}", BuiltInRegistries.BLOCK.getKey(visualBlock));
 
-            // 提取完整方块设置 (传入原始方块获取物理属性)
+            // 提取完整方块设置
             extractBlockSettings(block, defaultState, visualBlock, settings);
 
             // --- B. Polymer 特有逻辑 ---
@@ -132,6 +130,7 @@ public class BlockConverterLogic {
             }
 
             // --- D. 剔除优化 (Culling) ---
+            // 注意：这里仍然使用 FakeWorld.INSTANCE_UNSAFE 来检查物理属性，因为我们不需要 Player 上下文来检查物理特性
             if (visualState.isRedstoneConductor(FakeWorld.INSTANCE_UNSAFE, BlockPos.ZERO)) {
                 Map<String, Object> cullingData = new LinkedHashMap<>();
                 cullingData.put("occlude", true);
@@ -297,7 +296,7 @@ public class BlockConverterLogic {
     // --- 核心逻辑提取方法 ---
 
     private static void extractBlockSettings(Block block, BlockState state, Block visualBlock,
-                                           Map<String, Object> settings) {
+                                             Map<String, Object> settings) {
         settings.put("material", BuiltInRegistries.BLOCK.getKey(visualBlock).toString());
         settings.put("hardness", block.defaultBlockState().getDestroySpeed(FakeWorld.INSTANCE_UNSAFE, BlockPos.ZERO));
         settings.put("resistance", block.getExplosionResistance());
@@ -469,33 +468,19 @@ public class BlockConverterLogic {
             block instanceof SkullBlock;
     }
 
-    @SuppressWarnings("resource")
-    private static ServerPlayer createSafeFakePlayer() {
+    // [关键修复] 不再依赖 FakeWorld 强转，而是使用传入的 ServerLevel
+    private static ServerPlayer createSafeFakePlayer(ServerLevel world) {
         try {
-            ServerLevel world = null;
-            MinecraftServer server = null;
-
-            if (FakeWorld.INSTANCE_UNSAFE instanceof ServerLevel serverLevel) {
-                world = serverLevel;
-                server = world.getServer();
-            } else if (FakeWorld.INSTANCE_REGULAR instanceof ServerLevel serverLevel) {
-                world = serverLevel;
-                server = world.getServer();
-            }
-
             if (world == null) {
-                LOGGER.error("Cannot find valid ServerLevel instance for fake player");
+                LOGGER.error("Cannot create fake player: provided ServerLevel is null");
                 return null;
             }
 
-            final ServerLevel finalWorld = world;
-            final MinecraftServer finalServer = server;
-
             return new ServerPlayer(
-                finalServer,
-                finalWorld,
+                world.getServer(),
+                world,
                 new GameProfile(NIL_UUID, "PolymerBlockConverter"),
-                net.minecraft.server.level.ClientInformation.createDefault()
+                ClientInformation.createDefault()
             ) {
                 @Override public boolean isSpectator() { return false; }
                 @Override public boolean isCreative() { return false; }
