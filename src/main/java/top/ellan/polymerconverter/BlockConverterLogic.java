@@ -24,7 +24,89 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 public class BlockConverterLogic {
+    private static final java.util.Set<String> FURNITURE_HINT_PROPERTIES = java.util.Set.of(
+        "facing", "rotation", "axis", "shape", "half", "hinge", "part", "type", "face"
+    );
+
     private BlockConverterLogic() {
+    }
+
+    public static boolean shouldConvertAsFurniture(Block registeredBlock) {
+        StateDefinition<Block, BlockState> stateDef = registeredBlock.getStateDefinition();
+        Collection<Property<?>> properties = stateDef.getProperties();
+        if (properties.isEmpty()) {
+            return false;
+        }
+        boolean hasDirectionalOrShape = properties.stream()
+            .map(Property::getName)
+            .anyMatch(FURNITURE_HINT_PROPERTIES::contains);
+        if (!hasDirectionalOrShape) {
+            return false;
+        }
+        int variants = stateDef.getPossibleStates().size();
+        return variants > 1;
+    }
+
+    public static Map<String, Object> convertAsFurniture(Block registeredBlock, PolymerBlock polymerBlock, ServerLevel level) {
+        BlockState defaultState = registeredBlock.defaultBlockState();
+        PacketContext ctx = PacketContext.create(level.registryAccess());
+        BlockState visualState;
+        try {
+            visualState = PolymerBlockUtils.getBlockStateSafely(polymerBlock, defaultState, ctx);
+        } catch (Throwable ignored) {
+            visualState = defaultState;
+        }
+        Identifier visualBlockId = BuiltInRegistries.BLOCK.getKey(visualState.getBlock());
+        Identifier blockId = BuiltInRegistries.BLOCK.getKey(registeredBlock);
+        if (visualBlockId == null || blockId == null || !"minecraft".equals(visualBlockId.getNamespace())) {
+            return Map.of();
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        Map<String, Object> settings = new LinkedHashMap<>();
+        settings.put("item", blockId.toString());
+        settings.put("hit_times", 3);
+
+        Map<String, String> sounds = new LinkedHashMap<>();
+        String blockPath = visualBlockId.getPath();
+        sounds.put("break", "minecraft:block." + blockPath + ".break");
+        sounds.put("place", "minecraft:block." + blockPath + ".place");
+        sounds.put("hit", "minecraft:block." + blockPath + ".hit");
+        settings.put("sounds", sounds);
+        out.put("settings", settings);
+
+        Map<String, Object> variants = new LinkedHashMap<>();
+        Map<String, Object> ground = new LinkedHashMap<>();
+        java.util.List<Map<String, Object>> elements = new java.util.ArrayList<>();
+        Map<String, Object> element = new LinkedHashMap<>();
+        element.put("item", blockId.toString());
+        element.put("display-transform", "NONE");
+        element.put("billboard", "FIXED");
+        element.put("translation", "0,0.5,0");
+        elements.add(element);
+        ground.put("elements", elements);
+
+        java.util.List<Map<String, Object>> hitboxes = new java.util.ArrayList<>();
+        Map<String, Object> hitbox = new LinkedHashMap<>();
+        hitbox.put("position", "0,0,0");
+        hitbox.put("type", "interaction");
+        hitbox.put("blocks-building", true);
+        hitbox.put("invisible", true);
+        hitbox.put("width", 0.9f);
+        hitbox.put("height", 1.0f);
+        hitbox.put("interactive", true);
+        hitboxes.add(hitbox);
+        ground.put("hitboxes", hitboxes);
+        variants.put("ground", ground);
+        out.put("variants", variants);
+
+        Map<String, Object> loot = new LinkedHashMap<>();
+        loot.put("template", "default:loot_table/furniture");
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("item", blockId.toString());
+        loot.put("arguments", args);
+        out.put("loot", loot);
+        return out;
     }
 
     public static Map<String, Object> convert(Block registeredBlock, PolymerBlock polymerBlock, ServerLevel level) {

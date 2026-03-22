@@ -37,6 +37,7 @@ public class PolymerConverterMod implements ModInitializer {
     public static final String MOD_ID = "polymer_converter";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
     private Map<String, Object> lastConvertedItems = new LinkedHashMap<>();
+    private Map<String, Object> furnitureFromBlocks = new LinkedHashMap<>();
 
     @Override
     public void onInitialize() {
@@ -131,6 +132,8 @@ public class PolymerConverterMod implements ModInitializer {
     private int runBlockConversion(ServerLevel level) {
         Map<String, Object> root = new LinkedHashMap<>();
         Map<String, Object> blocks = new LinkedHashMap<>();
+        Map<String, Object> blockFurniture = new LinkedHashMap<>();
+        Set<String> furnitureIds = new HashSet<>();
         int count = 0;
 
         for (Identifier id : BuiltInRegistries.BLOCK.keySet()) {
@@ -155,10 +158,19 @@ public class PolymerConverterMod implements ModInitializer {
 
             String key = id.getNamespace() + ":" + id.getPath();
             try {
-                Map<String, Object> converted = BlockConverterLogic.convert(block, polymerBlock, level);
-                if (!converted.isEmpty()) {
-                    blocks.put(key, converted);
-                    count++;
+                if (BlockConverterLogic.shouldConvertAsFurniture(block)) {
+                    Map<String, Object> furniture = BlockConverterLogic.convertAsFurniture(block, polymerBlock, level);
+                    if (!furniture.isEmpty()) {
+                        blockFurniture.put(key, furniture);
+                        furnitureIds.add(key);
+                        count++;
+                    }
+                } else {
+                    Map<String, Object> converted = BlockConverterLogic.convert(block, polymerBlock, level);
+                    if (!converted.isEmpty()) {
+                        blocks.put(key, converted);
+                        count++;
+                    }
                 }
             } catch (Exception e) {
                 LOGGER.error("Failed to convert block {}", key, e);
@@ -168,12 +180,15 @@ public class PolymerConverterMod implements ModInitializer {
         root.put("blocks", blocks);
         writeConfig("converted_blocks.yml", root);
         writeSplitSection("blocks", "blocks", blocks);
+        this.furnitureFromBlocks = blockFurniture;
+        applyFurnitureItemBehaviorOverrides(furnitureIds);
         return count;
     }
 
     private int runEntityConversion(ServerLevel level) {
         Map<String, Object> root = new LinkedHashMap<>();
         Map<String, Object> furniture = new LinkedHashMap<>();
+        furniture.putAll(this.furnitureFromBlocks);
         int count = 0;
 
         for (Identifier id : BuiltInRegistries.ENTITY_TYPE.keySet()) {
@@ -189,7 +204,7 @@ public class PolymerConverterMod implements ModInitializer {
             try {
                 Map<String, Object> cfg = EntityConverterLogic.convert(type, level);
                 if (!cfg.isEmpty()) {
-                    furniture.put(id.getNamespace() + ":" + id.getPath(), cfg);
+                    furniture.putIfAbsent(id.getNamespace() + ":" + id.getPath(), cfg);
                     count++;
                 }
             } catch (Exception e) {
@@ -200,7 +215,44 @@ public class PolymerConverterMod implements ModInitializer {
         root.put("furniture", furniture);
         writeConfig("converted_furniture.yml", root);
         writeSplitSection("furniture", "furniture", furniture);
-        return count;
+        return furniture.size();
+    }
+
+    private void applyFurnitureItemBehaviorOverrides(Set<String> furnitureIds) {
+        if (furnitureIds.isEmpty()) {
+            return;
+        }
+        for (String id : furnitureIds) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> itemCfg = (Map<String, Object>) this.lastConvertedItems.get(id);
+            if (itemCfg == null) {
+                itemCfg = new LinkedHashMap<>();
+                itemCfg.put("material", "minecraft:paper");
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("item_name", "<!i>" + id);
+                itemCfg.put("data", data);
+                this.lastConvertedItems.put(id, itemCfg);
+            }
+            itemCfg.put("behavior", furnitureItemBehavior(id));
+        }
+        Map<String, Object> root = new LinkedHashMap<>();
+        root.put("items", this.lastConvertedItems);
+        writeConfig("converted_items.yml", root);
+        writeSplitSection("items", "items", this.lastConvertedItems);
+    }
+
+    private static Map<String, Object> furnitureItemBehavior(String furnitureId) {
+        Map<String, Object> behavior = new LinkedHashMap<>();
+        behavior.put("type", "furniture_item");
+        behavior.put("furniture", furnitureId);
+
+        Map<String, Object> rules = new LinkedHashMap<>();
+        Map<String, Object> ground = new LinkedHashMap<>();
+        ground.put("rotation", "any");
+        ground.put("alignment", "any");
+        rules.put("ground", ground);
+        behavior.put("rules", rules);
+        return behavior;
     }
 
     private int runSoundConversion() {
