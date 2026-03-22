@@ -48,19 +48,6 @@ public class BlockConverterLogic {
         settings.put("hardness", defaultState.getDestroySpeed(level, BlockPos.ZERO));
         settings.put("resistance", registeredBlock.getExplosionResistance());
 
-        settings.put("is_suffocating", defaultState.isSuffocating(level, BlockPos.ZERO));
-        settings.put("is_redstone_conductor", defaultState.isRedstoneConductor(level, BlockPos.ZERO));
-        settings.put("is_view_blocking", defaultState.isViewBlocking(level, BlockPos.ZERO));
-
-        try {
-            settings.put("map_color", defaultState.getMapColor(level, BlockPos.ZERO).id);
-        } catch (Throwable ignored) {
-        }
-
-        settings.put("push_reaction", defaultState.getPistonPushReaction().name().toLowerCase(Locale.ROOT));
-        settings.put("instrument", defaultState.instrument().getSerializedName());
-        settings.put("fluid_state", defaultState.getFluidState().isEmpty() ? "empty" : "water");
-
         Map<String, String> sounds = new LinkedHashMap<>();
         String blockPath = BuiltInRegistries.BLOCK.getKey(visualState.getBlock()).getPath();
         sounds.put("break", "minecraft:block." + blockPath + ".break");
@@ -179,7 +166,7 @@ public class BlockConverterLogic {
     private static String safePropertyValue(BlockState state, Property property) {
         try {
             Object value = state.getValue(property);
-            return String.valueOf(value).toLowerCase(Locale.ROOT);
+            return String.valueOf(value).toLowerCase(java.util.Locale.ROOT);
         } catch (Throwable ignored) {
             return "unknown";
         }

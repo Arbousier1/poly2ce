@@ -3,6 +3,7 @@ package top.ellan.polymerconverter;
 import eu.pb4.polymer.common.impl.FakeWorld;
 import eu.pb4.polymer.core.api.entity.PolymerEntity;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerLevel;
@@ -10,6 +11,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.item.Item;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import xyz.nucleoid.packettweaker.PacketContext;
@@ -35,6 +37,7 @@ public class EntityConverterLogic {
         if (entity == null) {
             return furnitureConfig;
         }
+        String fallbackItemId = resolveFallbackItemId(entityType);
 
         PolymerEntity polymerEntity = PolymerEntity.get(entity);
         if (polymerEntity == null) {
@@ -60,7 +63,7 @@ public class EntityConverterLogic {
         Map<String, Object> defaultVariant = new LinkedHashMap<>();
 
         List<Map<String, Object>> elements = new ArrayList<>();
-        Map<String, Object> element = buildElementForVisualType(visualType);
+        Map<String, Object> element = buildElementForVisualType(visualType, fallbackItemId);
         if (element == null) {
             return Map.of();
         }
@@ -85,16 +88,32 @@ public class EntityConverterLogic {
         return furnitureConfig;
     }
 
-    private static Map<String, Object> buildElementForVisualType(EntityType<?> visualType) {
+    private static Map<String, Object> buildElementForVisualType(EntityType<?> visualType, String fallbackItemId) {
         Map<String, Object> element = new LinkedHashMap<>();
         element.put("position", "0,0,0");
-
-        // Without real tracked render payload, placeholder elements are not reliable CE conversions.
-        if (visualType == EntityType.BLOCK_DISPLAY || visualType == EntityType.ITEM_DISPLAY || visualType == EntityType.TEXT_DISPLAY) {
-            return null;
-        }
+        // Keep conversion schema-valid even when exact display payload cannot be inferred.
+        // CE item_display requires "item".
+        element.put("type", "item_display");
+        element.put("item", fallbackItemId);
 
         return element;
+    }
+
+    private static String resolveFallbackItemId(EntityType<?> entityType) {
+        Identifier entityId = BuiltInRegistries.ENTITY_TYPE.getKey(entityType);
+        if (entityId == null) {
+            return "minecraft:barrier";
+        }
+
+        Item samePathItem = BuiltInRegistries.ITEM.getValue(entityId);
+        if (samePathItem != null) {
+            Identifier samePathItemId = BuiltInRegistries.ITEM.getKey(samePathItem);
+            if (samePathItemId != null) {
+                return samePathItemId.toString();
+            }
+        }
+
+        return "minecraft:barrier";
     }
 
     private static Entity createSafeEntity(EntityType<?> type) {

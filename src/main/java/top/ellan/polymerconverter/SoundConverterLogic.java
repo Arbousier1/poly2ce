@@ -6,7 +6,9 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.sounds.SoundEvent;
 import xyz.nucleoid.packettweaker.PacketContext;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public class SoundConverterLogic {
@@ -31,19 +33,20 @@ public class SoundConverterLogic {
 
             Map<String, Object> cfg = new LinkedHashMap<>();
             PolymerSyncedObject<SoundEvent> synced = PolymerSyncedObject.getSyncedObject(BuiltInRegistries.SOUND_EVENT, event);
-
+            String fallbackPath = "minecraft:block.note_block.harp";
             if (synced != null) {
-                cfg.put("type", "polymer");
                 SoundEvent fallback = synced.getPolymerReplacement(event, ctx);
                 if (fallback != null) {
                     Identifier fallbackId = BuiltInRegistries.SOUND_EVENT.getKey(fallback);
-                    cfg.put("fallback", fallbackId == null ? "minecraft:entity.experience_orb.pickup" : fallbackId.toString());
-                } else {
-                    cfg.put("fallback", "minecraft:entity.experience_orb.pickup");
+                    if (fallbackId != null) {
+                        fallbackPath = fallbackId.toString();
+                    }
                 }
-            } else {
-                cfg.put("type", "modded");
             }
+            List<String> entries = new ArrayList<>();
+            entries.add(fallbackPath);
+            cfg.put("replace", true);
+            cfg.put("sounds", entries);
 
             sounds.put(id.toString(), cfg);
         }

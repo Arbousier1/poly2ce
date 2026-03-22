@@ -44,6 +44,7 @@ public class PolymerConverterMod implements ModInitializer {
                 .executes(context -> {
                     ServerLevel level = context.getSource().getLevel();
                     context.getSource().sendSuccess(() -> Component.literal("poly2ce: converting Polymer data to CraftEngine configs..."), false);
+                    cleanPreviousOutputs();
 
                     int itemCount = runItemConversion(level);
                     int blockCount = runBlockConversion(level);
@@ -67,6 +68,16 @@ public class PolymerConverterMod implements ModInitializer {
                     return 1;
                 }))
         );
+    }
+
+    private void cleanPreviousOutputs() {
+        Path ceRoot = Paths.get("config", "craft-engine");
+        try {
+            deleteDirectory(ceRoot.resolve("generated"));
+            deleteDirectory(ceRoot.resolve("generated-pack"));
+        } catch (IOException e) {
+            LOGGER.warn("Failed to clean previous generated outputs", e);
+        }
     }
 
     private int runItemConversion(ServerLevel level) {
@@ -318,7 +329,8 @@ public class PolymerConverterMod implements ModInitializer {
         @SuppressWarnings("unchecked")
         Map<String, Object> typedI18n = (Map<String, Object>) i18nMap;
         Map<String, Object> i18nRoot = new LinkedHashMap<>();
-        i18nRoot.put("i18n", typedI18n);
+        // CraftEngine parses both "i18n" and "translations" as translation sections.
+        // Emitting both in one file will register duplicated keys.
         i18nRoot.put("translations", typedI18n);
         writeConfig("converted_i18n.yml", i18nRoot);
         writeSplitI18nByNamespace(typedI18n);
@@ -352,7 +364,7 @@ public class PolymerConverterMod implements ModInitializer {
                 Map<String, Object> locales = entry.getValue();
 
                 Map<String, Object> out = new LinkedHashMap<>();
-                out.put("i18n", locales);
+                // Keep only one canonical section to avoid duplicate registration.
                 out.put("translations", locales);
 
                 Path file = dir.resolve(namespace).resolve(namespace + ".yml");
@@ -478,14 +490,8 @@ public class PolymerConverterMod implements ModInitializer {
             copyDirectory(splitRoot.resolve("categories"), packConfig.resolve("categories"));
             copyDirectory(splitRoot.resolve("i18n"), packConfig.resolve("i18n"));
 
-            Path langSrc = ceRoot.resolve("converted_lang.yml");
-            if (Files.exists(langSrc)) {
-                Files.copy(langSrc, packConfig.resolve("lang.yml"), StandardCopyOption.REPLACE_EXISTING);
-            }
-            Path i18nSrc = ceRoot.resolve("converted_i18n.yml");
-            if (Files.exists(i18nSrc)) {
-                Files.copy(i18nSrc, packConfig.resolve("i18n.yml"), StandardCopyOption.REPLACE_EXISTING);
-            }
+            // Do not copy converted_lang.yml/converted_i18n.yml into the pack configuration.
+            // They would duplicate keys that already exist in split i18n namespace files.
 
             Path soundsSrc = ceRoot.resolve("converted_sounds.yml");
             if (Files.exists(soundsSrc)) {
