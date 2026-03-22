@@ -49,6 +49,7 @@ public class PolymerConverterMod implements ModInitializer {
                     int furnitureCount = runEntityConversion(level);
                     int soundCount = runSoundConversion();
                     int langCount = runLangConversion();
+                    int recipeCount = runRecipeConversion(level);
                     exportCeConfigPack();
 
                     context.getSource().sendSuccess(() -> Component.literal(
@@ -57,6 +58,7 @@ public class PolymerConverterMod implements ModInitializer {
                             + ", furniture=" + furnitureCount
                             + ", sounds=" + soundCount
                             + ", lang_entries=" + langCount
+                            + ", recipes=" + recipeCount
                     ), true);
                     context.getSource().sendSuccess(() -> Component.literal("Files written to config/craft-engine/ and generated-pack/poly2ce(.zip)"), false);
                     return 1;
@@ -213,6 +215,24 @@ public class PolymerConverterMod implements ModInitializer {
         }
     }
 
+    private int runRecipeConversion(ServerLevel level) {
+        try {
+            Map<String, Object> root = RecipeConverterLogic.convert(level);
+            writeConfig("converted_recipes.yml", root);
+
+            Object recipesObj = root.get("recipes");
+            if (recipesObj instanceof Map<?, ?> recipesMap) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> typed = (Map<String, Object>) recipesMap;
+                writeSplitSection("recipes", "recipes", typed);
+                return recipesMap.size();
+            }
+        } catch (Exception e) {
+            LOGGER.error("Failed to convert recipes", e);
+        }
+        return 0;
+    }
+
     private static int nestedCount(Map<String, Object> root, String sectionKey, String localeKey) {
         Object sectionObj = root.get(sectionKey);
         if (!(sectionObj instanceof Map<?, ?> section)) {
@@ -321,6 +341,7 @@ public class PolymerConverterMod implements ModInitializer {
             copyDirectory(splitRoot.resolve("items"), packConfig.resolve("items"));
             copyDirectory(splitRoot.resolve("blocks"), packConfig.resolve("blocks"));
             copyDirectory(splitRoot.resolve("furniture"), packConfig.resolve("furniture"));
+            copyDirectory(splitRoot.resolve("recipes"), packConfig.resolve("recipes"));
 
             Path langSrc = ceRoot.resolve("converted_lang.yml");
             if (Files.exists(langSrc)) {
