@@ -32,6 +32,7 @@ import java.util.zip.ZipOutputStream;
 public class PolymerConverterMod implements ModInitializer {
     public static final String MOD_ID = "polymer_converter";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+    private Map<String, Object> lastConvertedItems = new LinkedHashMap<>();
 
     @Override
     public void onInitialize() {
@@ -50,6 +51,7 @@ public class PolymerConverterMod implements ModInitializer {
                     int soundCount = runSoundConversion();
                     int langCount = runLangConversion();
                     int recipeCount = runRecipeConversion(level);
+                    int categoryCount = runCategoryConversion();
                     exportCeConfigPack();
 
                     context.getSource().sendSuccess(() -> Component.literal(
@@ -59,6 +61,7 @@ public class PolymerConverterMod implements ModInitializer {
                             + ", sounds=" + soundCount
                             + ", lang_entries=" + langCount
                             + ", recipes=" + recipeCount
+                            + ", categories=" + categoryCount
                     ), true);
                     context.getSource().sendSuccess(() -> Component.literal("Files written to config/craft-engine/ and plugins/CraftEngine/resources/poly2ce"), false);
                     return 1;
@@ -106,6 +109,7 @@ public class PolymerConverterMod implements ModInitializer {
         root.put("items", items);
         writeConfig("converted_items.yml", root);
         writeSplitSection("items", "items", items);
+        this.lastConvertedItems = new LinkedHashMap<>(items);
         return count;
     }
 
@@ -233,6 +237,64 @@ public class PolymerConverterMod implements ModInitializer {
         return 0;
     }
 
+    private int runCategoryConversion() {
+        try {
+            if (this.lastConvertedItems == null || this.lastConvertedItems.isEmpty()) {
+                return 0;
+            }
+
+            Map<String, Object> grouped = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : this.lastConvertedItems.entrySet()) {
+                String id = entry.getKey();
+                String namespace = namespaceOf(id);
+                if (namespace.isBlank() || "unknown".equals(namespace)) {
+                    continue;
+                }
+
+                @SuppressWarnings("unchecked")
+                Map<String, Object> ids = (Map<String, Object>) grouped.computeIfAbsent(namespace, ignored -> {
+                    Map<String, Object> one = new LinkedHashMap<>();
+                    one.put("ids", new java.util.ArrayList<String>());
+                    return one;
+                });
+                @SuppressWarnings("unchecked")
+                java.util.List<String> idList = (java.util.List<String>) ids.get("ids");
+                idList.add(id);
+            }
+
+            Map<String, Object> categories = new LinkedHashMap<>();
+            int priority = 1;
+            for (Map.Entry<String, Object> entry : grouped.entrySet()) {
+                String namespace = entry.getKey();
+                @SuppressWarnings("unchecked")
+                Map<String, Object> bucket = (Map<String, Object>) entry.getValue();
+                @SuppressWarnings("unchecked")
+                java.util.List<String> ids = (java.util.List<String>) bucket.get("ids");
+                if (ids == null || ids.isEmpty()) {
+                    continue;
+                }
+
+                Map<String, Object> category = new LinkedHashMap<>();
+                category.put("name", "<!i><white>" + namespace + "</white>");
+                category.put("lore", java.util.List.of());
+                category.put("hidden", false);
+                category.put("priority", priority++);
+                category.put("icon", ids.get(0));
+                category.put("list", ids);
+                categories.put(namespace + ":" + namespace, category);
+            }
+
+            Map<String, Object> root = new LinkedHashMap<>();
+            root.put("categories", categories);
+            writeConfig("converted_categories.yml", root);
+            writeSplitSection("categories", "categories", categories);
+            return categories.size();
+        } catch (Exception e) {
+            LOGGER.error("Failed to convert categories", e);
+            return 0;
+        }
+    }
+
     private static int nestedCount(Map<String, Object> root, String sectionKey, String localeKey) {
         Object sectionObj = root.get(sectionKey);
         if (!(sectionObj instanceof Map<?, ?> section)) {
@@ -344,6 +406,7 @@ public class PolymerConverterMod implements ModInitializer {
             copyDirectory(splitRoot.resolve("blocks"), packConfig.resolve("blocks"));
             copyDirectory(splitRoot.resolve("furniture"), packConfig.resolve("furniture"));
             copyDirectory(splitRoot.resolve("recipes"), packConfig.resolve("recipes"));
+            copyDirectory(splitRoot.resolve("categories"), packConfig.resolve("categories"));
 
             Path langSrc = ceRoot.resolve("converted_lang.yml");
             if (Files.exists(langSrc)) {
