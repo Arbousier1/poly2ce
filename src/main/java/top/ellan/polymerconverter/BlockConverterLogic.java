@@ -142,17 +142,22 @@ public class BlockConverterLogic {
 
         if (property instanceof BooleanProperty) {
             out.put("type", "boolean");
+            out.put("default", safeBooleanValue(defaultState, property));
         } else if (property instanceof IntegerProperty intProperty) {
             out.put("type", "int");
             int min = intProperty.getPossibleValues().stream().min(Integer::compareTo).orElse(0);
             int max = intProperty.getPossibleValues().stream().max(Integer::compareTo).orElse(0);
-            out.put("min", min);
-            out.put("max", max);
+            out.put("range", min + "~" + max);
+            out.put("default", safeIntValue(defaultState, property, min));
         } else {
             out.put("type", "string");
+            List<String> values = property.getPossibleValues().stream()
+                .map(v -> String.valueOf(v).toLowerCase(Locale.ROOT))
+                .toList();
+            out.put("values", values);
+            out.put("default", safePropertyValue(defaultState, property));
         }
 
-        out.put("default", safePropertyValue(defaultState, property));
         return out;
     }
 
@@ -169,6 +174,31 @@ public class BlockConverterLogic {
             return String.valueOf(value).toLowerCase(java.util.Locale.ROOT);
         } catch (Throwable ignored) {
             return "unknown";
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static boolean safeBooleanValue(BlockState state, Property property) {
+        try {
+            Object value = state.getValue(property);
+            if (value instanceof Boolean b) {
+                return b;
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static int safeIntValue(BlockState state, Property property, int fallback) {
+        try {
+            Object value = state.getValue(property);
+            if (value instanceof Number n) {
+                return n.intValue();
+            }
+            return Integer.parseInt(String.valueOf(value));
+        } catch (Throwable ignored) {
+            return fallback;
         }
     }
 

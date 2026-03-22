@@ -35,13 +35,8 @@ public class SoundConverterLogic {
             PolymerSyncedObject<SoundEvent> synced = PolymerSyncedObject.getSyncedObject(BuiltInRegistries.SOUND_EVENT, event);
             String fallbackPath = "minecraft:block.note_block.harp";
             if (synced != null) {
-                SoundEvent fallback = synced.getPolymerReplacement(event, ctx);
-                if (fallback != null) {
-                    Identifier fallbackId = BuiltInRegistries.SOUND_EVENT.getKey(fallback);
-                    if (fallbackId != null) {
-                        fallbackPath = fallbackId.toString();
-                    }
-                }
+                // Touch synced object for consistency, but keep exported path vanilla-safe.
+                synced.getPolymerReplacement(event, ctx);
             }
             List<String> entries = new ArrayList<>();
             entries.add(fallbackPath);

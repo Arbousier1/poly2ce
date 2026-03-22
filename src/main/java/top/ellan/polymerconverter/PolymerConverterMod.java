@@ -4,6 +4,8 @@ import eu.pb4.polymer.common.impl.CommonImplUtils;
 import eu.pb4.polymer.core.api.block.PolymerBlock;
 import eu.pb4.polymer.core.api.item.PolymerItem;
 import eu.pb4.polymer.core.api.utils.PolymerSyncedObject;
+import net.fabricmc.loader.api.FabricLoader;
+import net.fabricmc.loader.api.ModContainer;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.Commands;
@@ -23,8 +25,10 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -489,6 +493,7 @@ public class PolymerConverterMod implements ModInitializer {
             copyDirectory(splitRoot.resolve("recipes"), packConfig.resolve("recipes"));
             copyDirectory(splitRoot.resolve("categories"), packConfig.resolve("categories"));
             copyDirectory(splitRoot.resolve("i18n"), packConfig.resolve("i18n"));
+            copyReferencedAssets(packRoot);
 
             // Do not copy converted_lang.yml/converted_i18n.yml into the pack configuration.
             // They would duplicate keys that already exist in split i18n namespace files.
@@ -507,6 +512,71 @@ public class PolymerConverterMod implements ModInitializer {
         } catch (Exception e) {
             LOGGER.error("Failed to export CE config pack", e);
         }
+    }
+
+    private void copyReferencedAssets(Path packRoot) {
+        Set<String> namespaces = collectReferencedNamespaces();
+        Path assetsRoot = packRoot.resolve("assets");
+        try {
+            Files.createDirectories(assetsRoot);
+        } catch (IOException e) {
+            LOGGER.warn("Failed to create assets root {}", assetsRoot, e);
+            return;
+        }
+
+        int copiedCount = 0;
+        for (String namespace : namespaces) {
+            if (copyNamespaceAssets(namespace, assetsRoot.resolve(namespace))) {
+                copiedCount++;
+            }
+        }
+        LOGGER.info("Copied assets for {}/{} namespaces into generated pack", copiedCount, namespaces.size());
+    }
+
+    private Set<String> collectReferencedNamespaces() {
+        Set<String> namespaces = new HashSet<>();
+
+        for (Identifier id : BuiltInRegistries.ITEM.keySet()) {
+            if (!"minecraft".equals(id.getNamespace())) {
+                namespaces.add(id.getNamespace());
+            }
+        }
+        for (Identifier id : BuiltInRegistries.BLOCK.keySet()) {
+            if (!"minecraft".equals(id.getNamespace())) {
+                namespaces.add(id.getNamespace());
+            }
+        }
+        for (Identifier id : BuiltInRegistries.ENTITY_TYPE.keySet()) {
+            if (!"minecraft".equals(id.getNamespace())) {
+                namespaces.add(id.getNamespace());
+            }
+        }
+        for (Identifier id : BuiltInRegistries.SOUND_EVENT.keySet()) {
+            if (!"minecraft".equals(id.getNamespace())) {
+                namespaces.add(id.getNamespace());
+            }
+        }
+
+        return namespaces;
+    }
+
+    private boolean copyNamespaceAssets(String namespace, Path targetDir) {
+        boolean copiedAny = false;
+        for (ModContainer mod : FabricLoader.getInstance().getAllMods()) {
+            for (Path rootPath : mod.getRootPaths()) {
+                Path source = rootPath.resolve("assets").resolve(namespace);
+                if (!Files.exists(source)) {
+                    continue;
+                }
+                try {
+                    copyDirectory(source, targetDir);
+                    copiedAny = true;
+                } catch (IOException e) {
+                    LOGGER.warn("Failed to copy assets namespace {} from mod {}", namespace, mod.getMetadata().getId(), e);
+                }
+            }
+        }
+        return copiedAny;
     }
 
     private static void copyDirectory(Path source, Path target) throws IOException {
