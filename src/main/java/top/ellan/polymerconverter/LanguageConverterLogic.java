@@ -1,4 +1,4 @@
-﻿package top.ellan.polymerconverter;
+package top.ellan.polymerconverter;
 
 import eu.pb4.polymer.core.api.block.PolymerBlock;
 import eu.pb4.polymer.core.api.entity.PolymerEntity;

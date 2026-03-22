@@ -1,4 +1,4 @@
-﻿package top.ellan.polymerconverter;
+package top.ellan.polymerconverter;
 
 import eu.pb4.polymer.common.impl.CommonImplUtils;
 import eu.pb4.polymer.core.api.block.PolymerBlock;
@@ -91,8 +91,11 @@ public class PolymerConverterMod implements ModInitializer {
 
             String key = id.getNamespace() + ":" + id.getPath();
             try {
-                items.put(key, ConverterLogic.convert(item, polymerItem, level));
-                count++;
+                Map<String, Object> converted = ConverterLogic.convert(item, polymerItem, level);
+                if (!converted.isEmpty()) {
+                    items.put(key, converted);
+                    count++;
+                }
             } catch (Exception e) {
                 LOGGER.error("Failed to convert item {}", key, e);
             }
@@ -131,8 +134,11 @@ public class PolymerConverterMod implements ModInitializer {
 
             String key = id.getNamespace() + ":" + id.getPath();
             try {
-                blocks.put(key, BlockConverterLogic.convert(block, polymerBlock, level));
-                count++;
+                Map<String, Object> converted = BlockConverterLogic.convert(block, polymerBlock, level);
+                if (!converted.isEmpty()) {
+                    blocks.put(key, converted);
+                    count++;
+                }
             } catch (Exception e) {
                 LOGGER.error("Failed to convert block {}", key, e);
             }

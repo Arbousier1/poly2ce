@@ -1,4 +1,4 @@
-﻿package top.ellan.polymerconverter;
+package top.ellan.polymerconverter;
 
 import java.util.List;
 import java.util.Map;

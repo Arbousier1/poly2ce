@@ -1,4 +1,4 @@
-﻿package top.ellan.polymerconverter;
+package top.ellan.polymerconverter;
 
 import eu.pb4.polymer.core.api.utils.PolymerSyncedObject;
 import net.minecraft.core.registries.BuiltInRegistries;

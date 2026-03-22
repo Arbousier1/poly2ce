@@ -1,9 +1,10 @@
-﻿package top.ellan.polymerconverter;
+package top.ellan.polymerconverter;
 
 import eu.pb4.polymer.core.api.block.PolymerBlock;
 import eu.pb4.polymer.core.api.block.PolymerBlockUtils;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.Block;
@@ -37,6 +38,10 @@ public class BlockConverterLogic {
             visualState = PolymerBlockUtils.getBlockStateSafely(polymerBlock, defaultState, ctx);
         } catch (Throwable ignored) {
             visualState = defaultState;
+        }
+        Identifier visualBlockId = BuiltInRegistries.BLOCK.getKey(visualState.getBlock());
+        if (visualBlockId == null || !"minecraft".equals(visualBlockId.getNamespace())) {
+            return Map.of();
         }
 
         Map<String, Object> settings = new LinkedHashMap<>();
@@ -99,6 +104,10 @@ public class BlockConverterLogic {
                 } catch (Throwable ignored) {
                     candidateVisual = candidateState;
                 }
+                Identifier candidateVisualId = BuiltInRegistries.BLOCK.getKey(candidateVisual.getBlock());
+                if (candidateVisualId == null || !"minecraft".equals(candidateVisualId.getNamespace())) {
+                    continue;
+                }
 
                 Map<String, Object> appearance = new LinkedHashMap<>();
                 appearance.put("state", formatBlockState(candidateVisual));
@@ -109,6 +118,9 @@ public class BlockConverterLogic {
                 variants.put(variantKey, variant);
             }
 
+            if (appearances.isEmpty() || variants.isEmpty()) {
+                return Map.of();
+            }
             states.put("appearances", appearances);
             states.put("variants", variants);
             blockConfig.put("states", states);

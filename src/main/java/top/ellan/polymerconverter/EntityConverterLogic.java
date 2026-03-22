@@ -1,4 +1,4 @@
-﻿package top.ellan.polymerconverter;
+package top.ellan.polymerconverter;
 
 import eu.pb4.polymer.common.impl.FakeWorld;
 import eu.pb4.polymer.core.api.entity.PolymerEntity;
@@ -60,7 +60,11 @@ public class EntityConverterLogic {
         Map<String, Object> defaultVariant = new LinkedHashMap<>();
 
         List<Map<String, Object>> elements = new ArrayList<>();
-        elements.add(buildElementForVisualType(visualType));
+        Map<String, Object> element = buildElementForVisualType(visualType);
+        if (element == null) {
+            return Map.of();
+        }
+        elements.add(element);
 
         List<Map<String, Object>> hitboxes = new ArrayList<>();
         Map<String, Object> hitbox = new LinkedHashMap<>();
@@ -85,15 +89,9 @@ public class EntityConverterLogic {
         Map<String, Object> element = new LinkedHashMap<>();
         element.put("position", "0,0,0");
 
-        if (visualType == EntityType.BLOCK_DISPLAY) {
-            element.put("block_state", "minecraft:stone");
-        } else if (visualType == EntityType.TEXT_DISPLAY) {
-            element.put("text", "Polymer Entity");
-            element.put("billboard", "center");
-        } else {
-            element.put("item", "minecraft:barrier");
-            element.put("display_transform", "none");
-            element.put("billboard", "fixed");
+        // Without real tracked render payload, placeholder elements are not reliable CE conversions.
+        if (visualType == EntityType.BLOCK_DISPLAY || visualType == EntityType.ITEM_DISPLAY || visualType == EntityType.TEXT_DISPLAY) {
+            return null;
         }
 
         return element;

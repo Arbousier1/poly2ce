@@ -1,4 +1,4 @@
-﻿package top.ellan.polymerconverter;
+package top.ellan.polymerconverter;
 
 import eu.pb4.polymer.core.api.item.PolymerItem;
 import eu.pb4.polymer.core.api.item.PolymerItemUtils;
@@ -50,7 +50,11 @@ public class ConverterLogic {
         }
 
         Item clientItem = clientStack.getItem();
-        itemConfig.put("material", BuiltInRegistries.ITEM.getKey(clientItem).toString());
+        Identifier clientItemId = BuiltInRegistries.ITEM.getKey(clientItem);
+        if (clientItemId == null || !"minecraft".equals(clientItemId.getNamespace())) {
+            return Map.of();
+        }
+        itemConfig.put("material", clientItemId.toString());
 
         Identifier modelId = null;
         try {
@@ -123,6 +127,16 @@ public class ConverterLogic {
             behavior.put("type", "block_item");
             behavior.put("block", BuiltInRegistries.BLOCK.getKey(blockItem.getBlock()).toString());
             itemConfig.put("behavior", behavior);
+        }
+
+        Identifier registeredId = BuiltInRegistries.ITEM.getKey(registeredItem);
+        boolean materialChanged = registeredId != null && !registeredId.equals(clientItemId);
+        boolean hasDistinctiveFeature = itemConfig.containsKey("model")
+            || itemConfig.containsKey("data")
+            || itemConfig.containsKey("behavior");
+
+        if (!materialChanged && !hasDistinctiveFeature) {
+            return Map.of();
         }
 
         return itemConfig;
