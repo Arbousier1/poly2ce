@@ -207,11 +207,13 @@ public class PolymerConverterMod implements ModInitializer {
         try {
             Map<String, Object> root = LanguageConverterLogic.convert();
             writeConfig("converted_lang.yml", root);
+            writeI18nFiles(root);
 
             int count = 0;
             count += nestedCount(root, "lang#items", "en_us");
             count += nestedCount(root, "lang#blocks", "en_us");
             count += nestedCount(root, "lang#furniture", "en_us");
+            count += nestedCount(root, "i18n", "en_us");
             return count;
         } catch (Exception e) {
             LOGGER.error("Failed to convert language", e);
@@ -305,6 +307,73 @@ public class PolymerConverterMod implements ModInitializer {
             return 0;
         }
         return locale.size();
+    }
+
+    private void writeI18nFiles(Map<String, Object> root) {
+        Object i18nObj = root.get("i18n");
+        if (!(i18nObj instanceof Map<?, ?> i18nMap)) {
+            return;
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> typedI18n = (Map<String, Object>) i18nMap;
+        Map<String, Object> i18nRoot = new LinkedHashMap<>();
+        i18nRoot.put("i18n", typedI18n);
+        i18nRoot.put("translations", typedI18n);
+        writeConfig("converted_i18n.yml", i18nRoot);
+        writeSplitI18nByNamespace(typedI18n);
+    }
+
+    private void writeSplitI18nByNamespace(Map<String, Object> i18nLocales) {
+        Map<String, Map<String, Object>> perNamespacePerLocale = new LinkedHashMap<>();
+
+        for (Map.Entry<String, Object> localeEntry : i18nLocales.entrySet()) {
+            String locale = localeEntry.getKey();
+            if (!(localeEntry.getValue() instanceof Map<?, ?> values)) {
+                continue;
+            }
+            for (Map.Entry<?, ?> kv : values.entrySet()) {
+                if (!(kv.getKey() instanceof String key) || kv.getValue() == null) {
+                    continue;
+                }
+                String namespace = namespaceFromLangKey(key);
+                Map<String, Object> localeMap = perNamespacePerLocale.computeIfAbsent(namespace, ignored -> new LinkedHashMap<>());
+                @SuppressWarnings("unchecked")
+                Map<String, Object> oneLocaleValues = (Map<String, Object>) localeMap.computeIfAbsent(locale, ignored -> new LinkedHashMap<String, Object>());
+                oneLocaleValues.put(key, kv.getValue());
+            }
+        }
+
+        Path dir = Paths.get("config", "craft-engine", "generated", "i18n");
+        try {
+            Files.createDirectories(dir);
+            for (Map.Entry<String, Map<String, Object>> entry : perNamespacePerLocale.entrySet()) {
+                String namespace = sanitizeFileName(entry.getKey());
+                Map<String, Object> locales = entry.getValue();
+
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("i18n", locales);
+                out.put("translations", locales);
+
+                Path file = dir.resolve(namespace).resolve(namespace + ".yml");
+                Files.createDirectories(file.getParent());
+                Files.writeString(file, SimpleYamlWriter.dump(out));
+            }
+            LOGGER.info("Wrote {} split i18n files", perNamespacePerLocale.size());
+        } catch (IOException e) {
+            LOGGER.error("Failed to write split i18n files", e);
+        }
+    }
+
+    private static String namespaceFromLangKey(String key) {
+        String[] parts = key.split("\\.");
+        if (parts.length >= 2) {
+            String ns = parts[1];
+            if (!ns.isBlank()) {
+                return ns;
+            }
+        }
+        return "unknown";
     }
 
     private void writeConfig(String fileName, Map<String, Object> data) {
@@ -407,10 +476,15 @@ public class PolymerConverterMod implements ModInitializer {
             copyDirectory(splitRoot.resolve("furniture"), packConfig.resolve("furniture"));
             copyDirectory(splitRoot.resolve("recipes"), packConfig.resolve("recipes"));
             copyDirectory(splitRoot.resolve("categories"), packConfig.resolve("categories"));
+            copyDirectory(splitRoot.resolve("i18n"), packConfig.resolve("i18n"));
 
             Path langSrc = ceRoot.resolve("converted_lang.yml");
             if (Files.exists(langSrc)) {
                 Files.copy(langSrc, packConfig.resolve("lang.yml"), StandardCopyOption.REPLACE_EXISTING);
+            }
+            Path i18nSrc = ceRoot.resolve("converted_i18n.yml");
+            if (Files.exists(i18nSrc)) {
+                Files.copy(i18nSrc, packConfig.resolve("i18n.yml"), StandardCopyOption.REPLACE_EXISTING);
             }
 
             Path soundsSrc = ceRoot.resolve("converted_sounds.yml");

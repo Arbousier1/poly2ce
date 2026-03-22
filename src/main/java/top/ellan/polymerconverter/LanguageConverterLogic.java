@@ -32,6 +32,7 @@ public class LanguageConverterLogic {
         Map<String, String> itemEn = new TreeMap<>();
         Map<String, String> blockEn = new TreeMap<>();
         Map<String, String> furnitureEn = new TreeMap<>();
+        Map<String, String> i18nEn = new TreeMap<>();
 
         PacketContext ctx = PacketContext.create();
 
@@ -52,7 +53,10 @@ public class LanguageConverterLogic {
 
             ItemStack stack = PolymerItemUtils.getPolymerItemStack(item.getDefaultInstance(), TooltipFlag.NORMAL, ctx);
             String name = stack == null ? item.getName(item.getDefaultInstance()).getString() : stack.getHoverName().getString();
-            itemEn.put("item." + id.getNamespace() + "." + id.getPath(), "<!i>" + name);
+            String key = "item." + id.getNamespace() + "." + id.getPath();
+            String value = "<!i>" + name;
+            itemEn.put(key, value);
+            i18nEn.put(key, value);
         }
 
         for (Identifier id : BuiltInRegistries.BLOCK.keySet()) {
@@ -70,7 +74,9 @@ public class LanguageConverterLogic {
                 continue;
             }
 
-            blockEn.put("block_name:" + id.getNamespace() + ":" + id.getPath(), "<!i>" + block.getName().getString());
+            String value = "<!i>" + block.getName().getString();
+            blockEn.put("block_name:" + id.getNamespace() + ":" + id.getPath(), value);
+            i18nEn.put("block." + id.getNamespace() + "." + id.getPath(), value);
         }
 
         for (Identifier id : BuiltInRegistries.ENTITY_TYPE.keySet()) {
@@ -97,11 +103,13 @@ public class LanguageConverterLogic {
             String key = "furniture." + id.getNamespace() + "." + id.getPath();
             String label = humanize(id.getPath());
             furnitureEn.put(key, label);
+            i18nEn.put(key, label);
         }
 
         root.put("lang#items", locales(itemEn));
         root.put("lang#blocks", locales(blockEn));
         root.put("lang#furniture", locales(furnitureEn));
+        root.put("i18n", locales(i18nEn));
 
         return root;
     }
