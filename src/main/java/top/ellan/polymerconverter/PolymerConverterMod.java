@@ -60,7 +60,7 @@ public class PolymerConverterMod implements ModInitializer {
                             + ", lang_entries=" + langCount
                             + ", recipes=" + recipeCount
                     ), true);
-                    context.getSource().sendSuccess(() -> Component.literal("Files written to config/craft-engine/ and generated-pack/poly2ce(.zip)"), false);
+                    context.getSource().sendSuccess(() -> Component.literal("Files written to config/craft-engine/ and plugins/CraftEngine/resources/poly2ce"), false);
                     return 1;
                 }))
         );
@@ -327,6 +327,8 @@ public class PolymerConverterMod implements ModInitializer {
         Path packRoot = ceRoot.resolve(Paths.get("generated-pack", "poly2ce"));
         Path packConfig = packRoot.resolve("configuration");
         Path zipPath = ceRoot.resolve(Paths.get("generated-pack", "poly2ce.zip"));
+        Path ceResourcesRoot = Paths.get("plugins", "CraftEngine", "resources");
+        Path ceRuntimePackRoot = ceResourcesRoot.resolve("poly2ce");
 
         try {
             deleteDirectory(packRoot);
@@ -355,7 +357,10 @@ public class PolymerConverterMod implements ModInitializer {
 
             Files.createDirectories(zipPath.getParent());
             createZipFromDirectory(packRoot, zipPath);
+            deleteDirectory(ceRuntimePackRoot);
+            copyDirectory(packRoot, ceRuntimePackRoot);
             LOGGER.info("Exported CE config pack: {} and {}", packRoot, zipPath);
+            LOGGER.info("Exported CE runtime pack folder: {}", ceRuntimePackRoot);
         } catch (Exception e) {
             LOGGER.error("Failed to export CE config pack", e);
         }
