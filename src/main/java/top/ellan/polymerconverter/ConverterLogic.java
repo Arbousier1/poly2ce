@@ -2,6 +2,8 @@ package top.ellan.polymerconverter;
 
 import eu.pb4.polymer.core.api.item.PolymerItem;
 import eu.pb4.polymer.core.api.item.PolymerItemUtils;
+import net.fabricmc.loader.api.FabricLoader;
+import net.fabricmc.loader.api.ModContainer;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
@@ -18,6 +20,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import xyz.nucleoid.packettweaker.PacketContext;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -65,7 +69,7 @@ public class ConverterLogic {
             modelId = clientStack.get(DataComponents.ITEM_MODEL);
         }
         if (modelId != null) {
-            itemConfig.put("model", modelId.toString());
+            itemConfig.put("model", normalizeModelPath(modelId));
         }
 
         Map<String, Object> data = new LinkedHashMap<>();
@@ -140,5 +144,32 @@ public class ConverterLogic {
         }
 
         return itemConfig;
+    }
+
+    private static String normalizeModelPath(Identifier modelId) {
+        String namespace = modelId.getNamespace();
+        String path = modelId.getPath();
+        if (path.contains("/")) {
+            return modelId.toString();
+        }
+
+        if (modelJsonExists(namespace, path)) {
+            return modelId.toString();
+        }
+
+        String preferred = "item/" + path;
+        return namespace + ":" + preferred;
+    }
+
+    private static boolean modelJsonExists(String namespace, String modelPath) {
+        String relative = "assets/" + namespace + "/models/" + modelPath + ".json";
+        for (ModContainer mod : FabricLoader.getInstance().getAllMods()) {
+            for (Path rootPath : mod.getRootPaths()) {
+                if (Files.exists(rootPath.resolve(relative))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

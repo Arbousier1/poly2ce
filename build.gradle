@@ -52,6 +52,7 @@ dependencies {
     // Polymer 依赖
     modImplementation include("eu.pb4:polymer-common:${project.polymer_core_version}")
     modImplementation include("eu.pb4:polymer-core:${project.polymer_core_version}")
+    modImplementation include("eu.pb4:polymer-resource-pack:${project.polymer_core_version}")
     modImplementation include("eu.pb4:polymer-virtual-entity:${project.polymer_core_version}")
 }
 

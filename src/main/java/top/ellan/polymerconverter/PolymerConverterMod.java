@@ -4,6 +4,7 @@ import eu.pb4.polymer.common.impl.CommonImplUtils;
 import eu.pb4.polymer.core.api.block.PolymerBlock;
 import eu.pb4.polymer.core.api.item.PolymerItem;
 import eu.pb4.polymer.core.api.utils.PolymerSyncedObject;
+import eu.pb4.polymer.resourcepack.api.PolymerResourcePackUtils;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
 import net.fabricmc.api.ModInitializer;
@@ -20,6 +21,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -181,14 +184,13 @@ public class PolymerConverterMod implements ModInitializer {
         writeConfig("converted_blocks.yml", root);
         writeSplitSection("blocks", "blocks", blocks);
         this.furnitureFromBlocks = blockFurniture;
-        applyFurnitureItemBehaviorOverrides(furnitureIds);
+        applyFurnitureItemBehaviorOverrides(furnitureIds, blockFurniture);
         return count;
     }
 
     private int runEntityConversion(ServerLevel level) {
         Map<String, Object> root = new LinkedHashMap<>();
         Map<String, Object> furniture = new LinkedHashMap<>();
-        furniture.putAll(this.furnitureFromBlocks);
         int count = 0;
 
         for (Identifier id : BuiltInRegistries.ENTITY_TYPE.keySet()) {
@@ -218,7 +220,7 @@ public class PolymerConverterMod implements ModInitializer {
         return furniture.size();
     }
 
-    private void applyFurnitureItemBehaviorOverrides(Set<String> furnitureIds) {
+    private void applyFurnitureItemBehaviorOverrides(Set<String> furnitureIds, Map<String, Object> furnitureMap) {
         if (furnitureIds.isEmpty()) {
             return;
         }
@@ -233,7 +235,7 @@ public class PolymerConverterMod implements ModInitializer {
                 itemCfg.put("data", data);
                 this.lastConvertedItems.put(id, itemCfg);
             }
-            itemCfg.put("behavior", furnitureItemBehavior(id));
+            itemCfg.put("behavior", furnitureItemBehavior(id, furnitureMap.get(id)));
         }
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("items", this.lastConvertedItems);
@@ -241,10 +243,16 @@ public class PolymerConverterMod implements ModInitializer {
         writeSplitSection("items", "items", this.lastConvertedItems);
     }
 
-    private static Map<String, Object> furnitureItemBehavior(String furnitureId) {
+    private static Map<String, Object> furnitureItemBehavior(String furnitureId, Object furnitureConfig) {
         Map<String, Object> behavior = new LinkedHashMap<>();
         behavior.put("type", "furniture_item");
-        behavior.put("furniture", furnitureId);
+        if (furnitureConfig instanceof Map<?, ?> map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> typed = (Map<String, Object>) map;
+            behavior.put("furniture", typed);
+        } else {
+            behavior.put("furniture", furnitureId);
+        }
 
         Map<String, Object> rules = new LinkedHashMap<>();
         Map<String, Object> ground = new LinkedHashMap<>();
@@ -576,13 +584,88 @@ public class PolymerConverterMod implements ModInitializer {
             return;
         }
 
+        int polymerCopied = copyAssetsFromPolymerGeneratedPack(packRoot);
         int copiedCount = 0;
         for (String namespace : namespaces) {
             if (copyNamespaceAssets(namespace, assetsRoot.resolve(namespace))) {
                 copiedCount++;
             }
         }
-        LOGGER.info("Copied assets for {}/{} namespaces into generated pack", copiedCount, namespaces.size());
+        LOGGER.info(
+            "Copied {} files from Polymer generated pack; copied namespace assets for {}/{} namespaces into generated pack",
+            polymerCopied,
+            copiedCount,
+            namespaces.size()
+        );
+    }
+
+    private int copyAssetsFromPolymerGeneratedPack(Path packRoot) {
+        Path generatedPackZip = Paths.get("config", "craft-engine", "generated-pack", "polymer-resource-pack.zip");
+        try {
+            Files.createDirectories(generatedPackZip.getParent());
+            if (Files.exists(generatedPackZip)) {
+                Files.delete(generatedPackZip);
+            }
+        } catch (IOException e) {
+            LOGGER.warn("Failed preparing temp Polymer resource pack path {}", generatedPackZip, e);
+            return 0;
+        }
+
+        boolean generated = PolymerResourcePackUtils.buildMain(
+            generatedPackZip,
+            status -> LOGGER.debug("[polymer-rp] {}", status)
+        );
+        if (!generated || !Files.exists(generatedPackZip)) {
+            LOGGER.warn("Failed to generate Polymer resource pack at {}", generatedPackZip);
+            return 0;
+        }
+
+        int copied = 0;
+        try {
+            copied = copyAssetsFromZip(generatedPackZip, packRoot.resolve("assets"));
+        } catch (IOException e) {
+            LOGGER.warn("Failed to merge Polymer generated resource pack {}", generatedPackZip, e);
+        }
+
+        try {
+            Files.deleteIfExists(generatedPackZip);
+        } catch (IOException ignored) {
+        }
+        return copied;
+    }
+
+    private static int copyAssetsFromZip(Path zipPath, Path targetAssetsRoot) throws IOException {
+        int[] copied = new int[] {0};
+        try (FileSystem zipFs = FileSystems.newFileSystem(zipPath)) {
+            Path assetsRoot = zipFs.getPath("/assets");
+            if (!Files.exists(assetsRoot)) {
+                return 0;
+            }
+
+            try (Stream<Path> stream = Files.walk(assetsRoot)) {
+                stream.forEach(path -> {
+                    Path relative = assetsRoot.relativize(path);
+                    Path destination = targetAssetsRoot.resolve(relative.toString());
+                    try {
+                        if (Files.isDirectory(path)) {
+                            Files.createDirectories(destination);
+                        } else {
+                            Files.createDirectories(destination.getParent());
+                            Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING);
+                            copied[0]++;
+                        }
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+            }
+        } catch (RuntimeException e) {
+            if (e.getCause() instanceof IOException io) {
+                throw io;
+            }
+            throw e;
+        }
+        return copied[0];
     }
 
     private Set<String> collectReferencedNamespaces() {

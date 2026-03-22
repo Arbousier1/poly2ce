@@ -56,7 +56,7 @@ public class EntityConverterLogic {
         }
 
         Map<String, Object> settings = new LinkedHashMap<>();
-        settings.put("hit_times", 3);
+        settings.put("hit-times", 3);
         furnitureConfig.put("settings", settings);
 
         Map<String, Object> variants = new LinkedHashMap<>();
@@ -77,7 +77,7 @@ public class EntityConverterLogic {
         hitbox.put("height", Math.max(0.1f, entity.getBbHeight()));
         hitbox.put("interactive", true);
         hitbox.put("invisible", true);
-        hitbox.put("blocks_building", true);
+        hitbox.put("blocks-building", true);
         hitboxes.add(hitbox);
 
         defaultVariant.put("elements", elements);

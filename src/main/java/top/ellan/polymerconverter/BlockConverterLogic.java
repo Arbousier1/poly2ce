@@ -65,7 +65,7 @@ public class BlockConverterLogic {
         Map<String, Object> out = new LinkedHashMap<>();
         Map<String, Object> settings = new LinkedHashMap<>();
         settings.put("item", blockId.toString());
-        settings.put("hit_times", 3);
+        settings.put("hit-times", 3);
 
         Map<String, String> sounds = new LinkedHashMap<>();
         String blockPath = visualBlockId.getPath();

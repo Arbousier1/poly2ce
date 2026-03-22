@@ -33,7 +33,7 @@ public class SoundConverterLogic {
 
             Map<String, Object> cfg = new LinkedHashMap<>();
             PolymerSyncedObject<SoundEvent> synced = PolymerSyncedObject.getSyncedObject(BuiltInRegistries.SOUND_EVENT, event);
-            String fallbackPath = "minecraft:block.note_block.harp";
+            String fallbackPath = "minecraft:block/note_block/harp";
             if (synced != null) {
                 // Touch synced object for consistency, but keep exported path vanilla-safe.
                 synced.getPolymerReplacement(event, ctx);
